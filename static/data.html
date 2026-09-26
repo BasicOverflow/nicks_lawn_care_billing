@@ -247,6 +247,7 @@ function cellInput(value) {
   const input = document.createElement("input");
   input.type = "text";
   input.className = "cell";
+  input.tabIndex = -1;
   input.value = value == null ? "" : String(value);
   return input;
 }
@@ -360,6 +361,7 @@ function appendMark(row, plus, value) {
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "mark-x";
+  remove.tabIndex = -1;
   remove.textContent = "×";
   remove.title = "Remove this box";
   remove.onclick = () => {
@@ -385,6 +387,7 @@ function marksCell(value) {
   const plus = document.createElement("button");
   plus.type = "button";
   plus.className = "mark-add";
+  plus.tabIndex = -1;
   plus.textContent = "+";
   plus.title = "Add a day or job";
   plus.onclick = () => {
@@ -418,6 +421,7 @@ function addEditableRow(tbody, values, columns) {
   const rm = document.createElement("button");
   rm.type = "button";
   rm.className = "linkish";
+  rm.tabIndex = -1;
   rm.textContent = "Remove";
   rm.onclick = () => {
     if (tbody.children.length <= 1) {
@@ -470,6 +474,7 @@ function renderTable(extract) {
     const add = document.createElement("button");
     add.type = "button";
     add.className = "secondary";
+    add.tabIndex = -1;
     add.textContent = "Add row";
     add.onclick = () => addEditableRow(
       tbody,
