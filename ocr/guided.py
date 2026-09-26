@@ -17,12 +17,14 @@ from .cancel import InferenceCancelled, raise_if_cancelled
 from .chat import chat_with_image, novel_mode
 from .jsonutil import try_parse_json
 from .pipeline import fill_stats, merge_extracts, prefer_sheet_tables, _as_obj
+from .work_marks import normalize_work_marks
 from .prompts import (
     TABLE_JSON_SCHEMA,
     TRANSCRIBE,
     guided_chunk_prompt,
     guided_gap_prompt,
     guided_header_prompt,
+    guided_work_prompt,
     guided_notes_prompt,
     guided_price_prompt,
     guided_unknown_prompt,
@@ -72,7 +74,14 @@ def _force_columns(obj: dict, columns: list[str]) -> None:
         t["rows"] = rows
 
 
-def _vision(model_id: str, cfg: dict, image: Path, prompt: str) -> dict:
+def _vision(
+    model_id: str,
+    cfg: dict,
+    image: Path,
+    prompt: str,
+    *,
+    reuse_prepared: bool = False,
+) -> dict:
     text = chat_with_image(
         model_id,
         image,
@@ -81,8 +90,47 @@ def _vision(model_id: str, cfg: dict, image: Path, prompt: str) -> dict:
         temperature=0.0,
         guided_json=True,
         json_schema=TABLE_JSON_SCHEMA,
+        reuse_prepared=reuse_prepared,
     )
     return prefer_sheet_tables(_as_obj(text))
+
+
+def _work_columns(detected: list[str] | None) -> list[str]:
+    """Printed work-log headers. Roster columns (address, price, billing) are not this sheet."""
+    canon = ["CLIENT", "DATE & WORK COMPLETED"]
+    if not detected or not headers_look_valid(detected):
+        return canon
+    roles = [_col_role(c) for c in detected]
+    if "work" in roles and not ({"address", "price", "notes"} & set(roles)):
+        return detected
+    kept = [col for col, role in zip(detected, roles) if role in ("name", "work")]
+    if len(kept) >= 2 and "work" in roles:
+        return kept
+    return canon
+
+
+_BLEED = re.compile(
+    r"@|\bregular mail\b|\b(?:rd|road|ln|lane|st|street|ave|avenue|dr|drive|way|blvd)\b",
+    re.I,
+)
+_PHONE = re.compile(r"^\+?[\d\s().-]{7,}$")
+_DAY_LIST = re.compile(
+    r"^(?:[1-9]|[12]\d|3[01])[A-Za-z]*(?:\s+(?:[1-9]|[12]\d|3[01])[A-Za-z]*)*$"
+)
+
+
+def _off_sheet_value(text: str) -> bool:
+    """Address, email, or phone copied from the client file rather than the work grid.
+
+    A work cell of month days, such as "9 16 23", is not a phone number.
+    """
+    s = (text or "").strip()
+    if not s or _DAY_LIST.fullmatch(s):
+        return False
+    digits = sum(ch.isdigit() for ch in s)
+    if _PHONE.fullmatch(s) and digits >= 7:
+        return True
+    return bool(_BLEED.search(s))
 
 
 def canonical_columns(sheet_kind: str) -> list[str]:
@@ -120,6 +168,8 @@ def _columns_for_kind(sheet_kind: str, detected: list[str] | None) -> list[str]:
             roles = {_col_role(c) for c in detected}
             if "address" not in roles:
                 return canon
+        if kind in ("work", "work_completed"):
+            return _work_columns(detected)
         return detected
     return canon
 
@@ -135,11 +185,197 @@ def _name_keys(name: str) -> list[str]:
     return keys
 
 
-def names_visible_on_page(image: Path, names: list[str]) -> list[str]:
-    """Keep knowledge names whose tokens RapidOCR actually sees on the page."""
-    from .classical_ocr import ocr_page_boxes
+def _page_lines(boxes: list[tuple]) -> list[dict]:
+    """Cluster RapidOCR boxes into horizontal lines, top to bottom."""
+    if not boxes:
+        return []
+    heights = sorted(max(1.0, b[3] - b[1]) for b in boxes)
+    med = heights[len(heights) // 2]
+    thresh = max(8.0, med * 0.65)
+    lines: list[dict] = []
+    for b in sorted(boxes, key=lambda item: (item[1] + item[3]) / 2):
+        cy = (b[1] + b[3]) / 2
+        if lines and abs(cy - lines[-1]["y"]) <= thresh:
+            ln = lines[-1]
+            n = len(ln["boxes"])
+            ln["y"] = (ln["y"] * n + cy) / (n + 1)
+            ln["boxes"].append(b)
+        else:
+            lines.append({"y": cy, "boxes": [b]})
+    for ln in lines:
+        ordered = sorted(ln["boxes"], key=lambda item: item[0])
+        ln["norm"] = re.sub(r"[^A-Z0-9]", "", "".join(str(b[4]) for b in ordered).upper())
+    return lines
 
-    boxes = ocr_page_boxes(image)
+
+def _row_name(row: list, columns: list[str]) -> str:
+    for i, col in enumerate(columns):
+        c = str(col).lower()
+        if any(word in c for word in ("contact", "name", "client")):
+            return str(row[i]) if i < len(row) else ""
+    return str(row[0]) if row else ""
+
+
+def order_rows_like_photo(obj: dict, boxes: list[tuple]) -> dict:
+    """Sort each table's rows top-to-bottom the way they sit on the photo.
+
+    RapidOCR line positions locate the name. Rows that cannot be located keep
+    their relative order after the ones that can.
+    """
+    lines = _page_lines(boxes)
+    if len(lines) < 3 or not isinstance(obj, dict):
+        return obj
+    for table in obj.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        rows = [r for r in (table.get("rows") or []) if isinstance(r, list)]
+        if len(rows) < 2:
+            continue
+        columns = [str(c) for c in (table.get("columns") or [])]
+        claimed: set[int] = set()
+        picks: list[tuple[int, int, int]] = []
+        for ri, row in enumerate(rows):
+            keys = [k for k in _name_keys(_row_name(row, columns)) if len(k) >= 4]
+            if not keys:
+                continue
+            for li, ln in enumerate(lines):
+                hit = sum(len(k) for k in keys if k in ln["norm"])
+                if hit >= 4:
+                    picks.append((hit, ri, li))
+        picks.sort(key=lambda item: (-item[0], item[2]))
+        assigned: dict[int, float] = {}
+        for score, ri, li in picks:
+            if ri in assigned or li in claimed:
+                continue
+            assigned[ri] = lines[li]["y"]
+            claimed.add(li)
+        if len(assigned) < max(3, int(len(rows) * 0.35)):
+            continue
+        placed: list[tuple[int, float, int, list]] = []
+        for i, row in enumerate(rows):
+            y = assigned.get(i)
+            if y is None:
+                placed.append((1, float(i), i, row))
+            else:
+                placed.append((0, y, i, row))
+        placed.sort()
+        table["rows"] = [row for *_, row in placed]
+    return obj
+
+
+READING_ORDER_SCHEMA = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {"names": {"type": "array", "items": {"type": "string"}}},
+    "required": ["names"],
+}
+
+READING_ORDER_PROMPT = """
+Read the photographed sheet from top to bottom, the way the rows were written on the page.
+List every customer or client name in that visual order. Do not alphabetize. Do not skip a row because a price, date, or note is blank.
+Use the name as written, usually LAST, First. One entry per row. Do not include prices, dates, addresses, or phone numbers.
+Return JSON {"names": ["name 1", "name 2"]}.
+""".strip()
+
+
+def _name_score(query: str, candidate: str) -> int:
+    qk = [k for k in _name_keys(query) if len(k) >= 4]
+    ck = [k for k in _name_keys(candidate) if len(k) >= 4]
+    if not qk or not ck:
+        return 0
+    score = 0
+    for q in qk:
+        if q in ck:
+            score += len(q) + 4
+            continue
+        for c in ck:
+            if len(q) >= 4 and len(c) >= 4 and (q[:4] == c[:4]):
+                score += 3
+                break
+    return score
+
+
+def order_rows_by_reading_order(obj: dict, names: list[str]) -> dict:
+    """Sort rows to follow a top-to-bottom name list from the same photo."""
+    clean = [str(n).strip() for n in names if str(n).strip()]
+    if len(clean) < 3 or not isinstance(obj, dict):
+        return obj
+    for table in obj.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        rows = [r for r in (table.get("rows") or []) if isinstance(r, list)]
+        if len(rows) < 2:
+            continue
+        columns = [str(c) for c in (table.get("columns") or [])]
+        unused = set(range(len(rows)))
+        placed: dict[int, float] = {}
+        for read_i, name in enumerate(clean):
+            best_i = None
+            best = 0
+            for ri in unused:
+                score = _name_score(name, _row_name(rows[ri], columns))
+                if score > best:
+                    best = score
+                    best_i = ri
+            if best_i is None or best < 4:
+                continue
+            placed[best_i] = float(read_i)
+            unused.remove(best_i)
+        if len(placed) < 3:
+            continue
+        matched = [rows[i] for i, _ in sorted(placed.items(), key=lambda item: (item[1], item[0]))]
+        leftover = [rows[i] for i in range(len(rows)) if i not in placed]
+        table["rows"] = matched + leftover
+    return obj
+
+
+def _snapshot_rows(obj: dict) -> list[list[str]]:
+    out: list[list[str]] = []
+    for table in obj.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        for row in table.get("rows") or []:
+            if isinstance(row, list):
+                out.append([str(c) for c in row])
+    return out
+
+
+def apply_photo_order(obj: dict, boxes: list[tuple], model_id: str, cfg: dict, page: Path, prefix: str) -> dict:
+    """Put rows in photo order. Line boxes first; a reading pass if those miss."""
+    before = _snapshot_rows(obj)
+    order_rows_like_photo(obj, boxes)
+    if _snapshot_rows(obj) != before:
+        print(f"  {prefix} rows ordered from text positions on the photo", flush=True)
+        return obj
+    try:
+        text = chat_with_image(
+            model_id,
+            page,
+            READING_ORDER_PROMPT,
+            max_tokens=min(_max_out(cfg), 2048),
+            temperature=0.0,
+            guided_json=True,
+            json_schema=READING_ORDER_SCHEMA,
+            schema_name="reading_order",
+            reuse_prepared=True,
+        )
+        data = _as_obj(text)
+        names = data.get("names") if isinstance(data, dict) else None
+        if not isinstance(names, list):
+            names = []
+    except Exception as e:
+        print(f"  {prefix} reading-order pass failed ({e})", flush=True)
+        return obj
+    print(f"  {prefix} reading-order names={len(names)}", flush=True)
+    return order_rows_by_reading_order(obj, [str(n) for n in names])
+
+
+def names_visible_on_page(image: Path, names: list[str], boxes: list[tuple] | None = None) -> list[str]:
+    """Keep knowledge names whose tokens RapidOCR actually sees on the page."""
+    if boxes is None:
+        from .classical_ocr import ocr_page_boxes
+
+        boxes = ocr_page_boxes(image)
     blob = re.sub(r"[^A-Z0-9]", "", " ".join(str(b[4]) for b in boxes).upper())
     if len(blob) < 40:
         return names
@@ -497,11 +733,24 @@ def _append_unknown_rows(merged: dict, extra: dict, columns: list[str]) -> int:
     return added
 
 
-def detect_headers(model_id: str, cfg: dict, image: Path, sheet_kind: str) -> dict:
+def detect_headers(
+    model_id: str,
+    cfg: dict,
+    image: Path,
+    sheet_kind: str,
+    *,
+    reuse_prepared: bool = False,
+) -> dict:
     """One full-page pass: title + column headers (+ any free notes)."""
     fallback = canonical_columns(sheet_kind)
     try:
-        obj = _vision(model_id, cfg, image, guided_header_prompt(sheet_kind))
+        obj = _vision(
+            model_id,
+            cfg,
+            image,
+            guided_header_prompt(sheet_kind),
+            reuse_prepared=reuse_prepared,
+        )
     except Exception as e:
         print(f"  [guided] header fail: {e}", flush=True)
         return {"title": None, "columns": fallback, "notes": []}
@@ -527,7 +776,7 @@ def extract_guided(
     *,
     knowledge_names: list[str] | None = None,
     knowledge_records: list[dict] | None = None,
-    sheet_kind: str = "mowing",
+    sheet_kind: str = "work",
     chunk_size: int = DEFAULT_CHUNK,
     wave_workers: int | None = None,
     fx_id: str | None = None,
@@ -537,7 +786,191 @@ def extract_guided(
     if not page.is_file():
         raise FileNotFoundError(page)
     raise_if_cancelled()
+    from .chat import prepare_image
 
+    original = page
+    page = prepare_image(original)
+    try:
+        return _guided_once(
+            model_id,
+            cfg,
+            page,
+            knowledge_names=knowledge_names,
+            knowledge_records=knowledge_records,
+            sheet_kind=sheet_kind,
+            chunk_size=chunk_size,
+            wave_workers=wave_workers,
+            fx_id=fx_id or original.stem,
+        )
+    finally:
+        if page != original:
+            page.unlink(missing_ok=True)
+
+
+def _sheet_names(model_id: str, cfg: dict, page: Path) -> list[str]:
+    """Names written on the page, top to bottom. Not the client roster."""
+    text = chat_with_image(
+        model_id,
+        page,
+        READING_ORDER_PROMPT,
+        max_tokens=min(_max_out(cfg), 2048),
+        temperature=0.0,
+        guided_json=True,
+        json_schema=READING_ORDER_SCHEMA,
+        schema_name="reading_order",
+        reuse_prepared=True,
+    )
+    data = _as_obj(text)
+    names = data.get("names") if isinstance(data, dict) else None
+    if not isinstance(names, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        text_name = str(name).strip()
+        key = _name_key(text_name)
+        if not text_name or not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(text_name)
+    return out
+
+
+def _work_cells(obj: dict, columns: list[str]) -> list[list[str]]:
+    """One name plus one work cell. Extra cells are more days or job notes, not new columns."""
+    width = max(len(columns), 1)
+    rows: list[list[str]] = []
+    for table in obj.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        for row in table.get("rows") or []:
+            if not isinstance(row, list) or not any(str(c).strip() for c in row):
+                continue
+            cells = [str(c).strip() for c in row]
+            if width == 1:
+                cells = cells[:1]
+            elif len(cells) > width:
+                head = cells[: width - 1]
+                tail = " ".join(part for part in cells[width - 1 :] if part)
+                cells = head + [tail]
+            if len(cells) < width:
+                cells += [""] * (width - len(cells))
+            cells = cells[:width]
+            for i in range(1, width):
+                if _off_sheet_value(cells[i]):
+                    cells[i] = ""
+                else:
+                    cells[i] = normalize_work_marks(cells[i])
+            if cells[0]:
+                rows.append(cells)
+    return rows
+
+
+def _take_work_row(name: str, pool: list[list[str]], columns: list[str]) -> list[str] | None:
+    best_i = None
+    best = 0
+    for i, row in enumerate(pool):
+        score = _name_score(name, _row_name(row, columns))
+        if score > best:
+            best = score
+            best_i = i
+    if best_i is None or best < 4:
+        return None
+    return pool.pop(best_i)
+
+
+def _extract_work_sheet(
+    model_id: str,
+    cfg: dict,
+    page: Path,
+    *,
+    sheet_kind: str,
+    chunk_size: int,
+    workers: int,
+    prefix: str,
+    t0: float,
+) -> dict:
+    """Columns and cells from the work-completed photo. The roster is not a column source."""
+    header = detect_headers(model_id, cfg, page, sheet_kind, reuse_prepared=True)
+    columns = header["columns"]
+    print(f"  {prefix} work headers: {columns!r} title={header.get('title')!r}", flush=True)
+    try:
+        names = _sheet_names(model_id, cfg, page)
+    except Exception as e:
+        print(f"  {prefix} sheet names failed ({e})", flush=True)
+        names = []
+    print(f"  {prefix} names written on sheet: {len(names)}", flush=True)
+    pool: list[list[str]] = []
+    if names:
+        groups = _chunks(names, chunk_size)
+
+        def _one(group: list[str]) -> dict:
+            raise_if_cancelled()
+            return _vision(
+                model_id,
+                cfg,
+                page,
+                guided_work_prompt(group, columns, header.get("title")),
+                reuse_prepared=True,
+            )
+
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, len(groups)))) as pool_ex:
+            futs = [pool_ex.submit(_one, group) for group in groups]
+            for fut in as_completed(futs):
+                try:
+                    got = fut.result()
+                except InferenceCancelled:
+                    raise
+                except Exception as e:
+                    print(f"  {prefix} work chunk fail: {e}", flush=True)
+                    continue
+                pool.extend(_work_cells(got, columns))
+        rows: list[list[str]] = []
+        for name in names:
+            hit = _take_work_row(name, pool, columns)
+            if hit is None:
+                rows.append([name] + [""] * (len(columns) - 1))
+            else:
+                rows.append(hit)
+    else:
+        try:
+            got = _vision(
+                model_id,
+                cfg,
+                page,
+                guided_work_prompt([], columns, header.get("title")),
+                reuse_prepared=True,
+            )
+            rows = _work_cells(got, columns)
+        except Exception as e:
+            print(f"  {prefix} work transcribe fail: {e}", flush=True)
+            rows = []
+    merged = {
+        "title": header.get("title"),
+        "tables": [{"caption": None, "columns": columns, "rows": rows}],
+        "notes": header.get("notes") or [],
+        "complete": bool(rows),
+    }
+    st = fill_stats(merged)
+    print(
+        f"  {prefix} work sheet in {time.time() - t0:.0f}s — rows={st['rows']} cols={columns!r}",
+        flush=True,
+    )
+    return merged
+
+
+def _guided_once(
+    model_id: str,
+    cfg: dict,
+    page: Path,
+    *,
+    knowledge_names: list[str] | None,
+    knowledge_records: list[dict] | None,
+    sheet_kind: str,
+    chunk_size: int,
+    wave_workers: int | None,
+    fx_id: str | None,
+) -> dict:
     prefix = f"[{fx_id or page.stem}]"
     workers = wave_workers if wave_workers is not None else _parallelism(cfg)
     if knowledge_records:
@@ -546,7 +979,25 @@ def extract_guided(
         all_records = [{"name": n.strip()} for n in (knowledge_names or []) if str(n).strip()]
     all_names = [r["name"] for r in all_records]
     t0 = time.time()
-    visible = set(names_visible_on_page(page, all_names)) if all_names else set()
+    page_boxes: list[tuple] = []
+    try:
+        from .classical_ocr import ocr_page_boxes
+
+        page_boxes = ocr_page_boxes(page)
+    except Exception as e:
+        print(f"  {prefix} page boxes failed ({e})", flush=True)
+    if (sheet_kind or "").lower() in ("work", "work_completed"):
+        return _extract_work_sheet(
+            model_id,
+            cfg,
+            page,
+            sheet_kind=sheet_kind,
+            chunk_size=chunk_size,
+            workers=workers,
+            prefix=prefix,
+            t0=t0,
+        )
+    visible = set(names_visible_on_page(page, all_names, page_boxes)) if all_names else set()
     records = [r for r in all_records if r["name"] in visible] if visible else []
     if all_names and not records:
         records = list(all_records)
@@ -559,7 +1010,7 @@ def extract_guided(
 
     # 1) Header / title (single full-page call)
     raise_if_cancelled()
-    header = detect_headers(model_id, cfg, page, sheet_kind)
+    header = detect_headers(model_id, cfg, page, sheet_kind, reuse_prepared=True)
     columns = header["columns"]
     print(
         f"  {prefix} headers: {columns!r} title={header.get('title')!r}",
@@ -570,14 +1021,14 @@ def extract_guided(
         # Fallback: one unguided full-page pull if knowledge is empty
         print(f"  {prefix} no knowledge — single full-page transcribe", flush=True)
         try:
-            obj = _vision(model_id, cfg, page, TRANSCRIBE)
+            obj = _vision(model_id, cfg, page, TRANSCRIBE, reuse_prepared=True)
         except Exception as e:
             print(f"  {prefix} full-page fail: {e}", flush=True)
             obj = _as_obj("{}")
         obj["title"] = obj.get("title") or header.get("title")
         if header.get("notes"):
             obj["notes"] = list(dict.fromkeys([*(obj.get("notes") or []), *header["notes"]]))
-        return prefer_sheet_tables(obj)
+        return apply_photo_order(prefer_sheet_tables(obj), page_boxes, model_id, cfg, page, prefix)
 
     groups = _chunks(records, chunk_size)
     hist: list[dict] = []
@@ -591,7 +1042,7 @@ def extract_guided(
             sheet_kind=sheet_kind,
             title=header.get("title"),
         )
-        obj = _vision(model_id, cfg, page, prompt)
+        obj = _vision(model_id, cfg, page, prompt, reuse_prepared=True)
         _force_columns(obj, columns)
         st = fill_stats(obj)
         return gi, obj, st
@@ -634,6 +1085,7 @@ def extract_guided(
             cfg,
             page,
             guided_notes_prompt(sheet_kind, header.get("title")),
+            reuse_prepared=True,
         )
         if notes_obj.get("notes"):
             parts.append({"title": None, "tables": [], "notes": notes_obj["notes"], "complete": False})
@@ -691,6 +1143,7 @@ def extract_guided(
                 cfg,
                 page,
                 guided_price_prompt(group, sheet_kind=sheet_kind),
+                reuse_prepared=True,
             )
 
         with ThreadPoolExecutor(max_workers=max(1, min(workers, len(price_groups)))) as pool:
@@ -719,7 +1172,7 @@ def extract_guided(
             flush=True,
         )
         try:
-            full = _vision(model_id, cfg, page, TRANSCRIBE)
+            full = _vision(model_id, cfg, page, TRANSCRIBE, reuse_prepared=True)
             n_full = _append_by_role(merged, full, columns)
             n_unknown += n_full
             print(f"  {prefix} whole-table rows added: {n_full}", flush=True)
@@ -737,6 +1190,7 @@ def extract_guided(
                 sheet_kind=sheet_kind,
                 title=header.get("title"),
             ),
+            reuse_prepared=True,
         )
         _force_columns(extra, columns)
         n_unknown = _append_unknown_rows(merged, extra, columns)
@@ -781,6 +1235,7 @@ def extract_guided(
                     title=header.get("title"),
                     ask_others=others,
                 ),
+                reuse_prepared=True,
             )
 
         round_added = 0
@@ -817,6 +1272,7 @@ def extract_guided(
         if round_added == 0 and round_filled == 0:
             break
 
+    apply_photo_order(merged, page_boxes, model_id, cfg, page, prefix)
     st = fill_stats(merged)
     elapsed = round(time.time() - t0, 2)
     print(

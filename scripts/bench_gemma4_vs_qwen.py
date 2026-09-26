@@ -124,9 +124,12 @@ def score_extract(extract: dict, gold: dict) -> dict:
 
 
 def load_fixtures() -> list[dict]:
+    """Work-completed photos only. Rosters and hedge lists are typed, not OCR'd."""
     idx = json.loads((ROOT / "ground_truth" / "index.json").read_text(encoding="utf-8"))
     out = []
     for fx in idx["fixtures"]:
+        if "work" not in str(fx.get("kind") or "").lower():
+            continue
         img = ROOT / fx["image"]
         gold_path = ROOT / fx["gold_file"]
         if not img.is_file() or not gold_path.is_file():

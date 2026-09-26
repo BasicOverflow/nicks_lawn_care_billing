@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Billing — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=3"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=14"/>
 </head>
 <body>
 <header class="top">
@@ -25,7 +25,7 @@
 </header>
 <main>
   <h1>Billing</h1>
-  <p class="hint">Generate invoices from confirmed knowledge. View PDFs here, download packs, or email clients who have an address on file.</p>
+  <p class="hint">Generate invoices from confirmed knowledge. Reloading the page clears the bill list — generate again to view, download, or email.</p>
 
   <section class="card">
     <h2>Month</h2>
@@ -45,10 +45,10 @@
       <button type="button" id="btnEmail">Email all bills with an email</button>
     </div>
     <p class="msg" id="mailMsg"></p>
-    <div id="billList"><p class="hint">Generate or pick a month.</p></div>
+    <div id="billList"><p class="hint">No PDFs yet for this month — click Generate.</p></div>
     <div class="row-actions">
-      <a class="btn" id="btnZipAll" href="#">Download all bills</a>
-      <a class="btn secondary" id="btnZipMail" href="#">Download all mailing-only bills</a>
+      <a class="btn is-disabled" id="btnZipAll" href="#">Download all bills</a>
+      <a class="btn secondary is-disabled" id="btnZipMail" href="#">Download all mailing-only bills</a>
       <a class="btn secondary" id="btnTax" href="#">Tax table (TSV)</a>
     </div>
   </section>
@@ -61,9 +61,12 @@
     <div id="viewerStack" class="pdf-stack"></div>
   </section>
 </main>
-<script src="/static/js/app.js?v=3"></script>
+<script src="/static/js/app.js?v=9"></script>
 <script>
 let lastBills = [];
+// Months generated in this page load only. A reload starts empty.
+const generatedMonths = new Set();
+let pendingGenerateJob = null;
 
 function pdfUrl(key) {
   return `/api/billing/pdf?key=${encodeURIComponent(key)}&t=${Date.now()}`;
@@ -304,15 +307,50 @@ async function loadMonths() {
     o.value = m; o.textContent = m;
     sel.appendChild(o);
   });
-  refreshBills();
+  showMonthBills();
+}
+
+function setPackLinks(month, enabled) {
+  const zipAll = el("btnZipAll");
+  const zipMail = el("btnZipMail");
+  if (month) el("btnTax").href = `/api/billing/${month}/tax.tsv`;
+  if (!enabled || !month) {
+    zipAll.href = "#";
+    zipMail.href = "#";
+    zipAll.classList.add("is-disabled");
+    zipMail.classList.add("is-disabled");
+    return;
+  }
+  zipAll.href = `/api/billing/${month}/download.zip?mode=all`;
+  zipMail.href = `/api/billing/${month}/download.zip?mode=mailing_only`;
+  zipAll.classList.remove("is-disabled");
+  zipMail.classList.remove("is-disabled");
+}
+
+function clearBillList() {
+  lastBills = [];
+  el("viewerCard").hidden = true;
+  el("viewerStack").innerHTML = "";
+  el("billList").innerHTML = "<p class='hint'>No PDFs yet for this month — click Generate.</p>";
+  setPackLinks(el("month").value, false);
+}
+
+function showMonthBills() {
+  const month = el("month").value;
+  if (month && generatedMonths.has(month)) {
+    refreshBills();
+    return;
+  }
+  clearBillList();
 }
 
 async function refreshBills() {
   const month = el("month").value;
-  if (!month) return;
-  el("btnZipAll").href = `/api/billing/${month}/download.zip?mode=all`;
-  el("btnZipMail").href = `/api/billing/${month}/download.zip?mode=mailing_only`;
-  el("btnTax").href = `/api/billing/${month}/tax.tsv`;
+  if (!month || !generatedMonths.has(month)) {
+    clearBillList();
+    return;
+  }
+  setPackLinks(month, true);
   try {
     const r = await api(`/api/billing/${month}/list`);
     lastBills = r.bills || [];
@@ -356,13 +394,21 @@ el("btnGenerate").onclick = async () => {
   const month = el("month").value;
   if (!month) return;
   try {
-    await api("/api/billing/generate", {
+    const job = await api("/api/billing/generate", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ month }),
     });
+    pendingGenerateJob = job.job_id || null;
     el("genMsg").textContent = "Generating…";
+    el("genMsg").className = "msg";
+    // The progress poll may already have seen this job finish before we stored its id.
+    const p = await api("/api/progress");
+    if (pendingGenerateJob && p.job_id === pendingGenerateJob && p.status === "done") {
+      window.onJobDone(p);
+    }
   } catch (e) {
+    pendingGenerateJob = null;
     el("genMsg").textContent = e.message;
     el("genMsg").className = "msg err";
   }
@@ -371,6 +417,11 @@ el("btnGenerate").onclick = async () => {
 el("btnEmail").onclick = async () => {
   const month = el("month").value;
   if (!month) return;
+  if (!generatedMonths.has(month)) {
+    el("mailMsg").textContent = "Generate PDFs for this month first.";
+    el("mailMsg").className = "msg";
+    return;
+  }
   try {
     await api(`/api/billing/${month}/email`, { method: "POST" });
     el("mailMsg").textContent = "Emailing bills that have an email…";
@@ -393,17 +444,28 @@ el("btnCloseViewer").onclick = () => {
   el("viewerStack").innerHTML = "";
 };
 
-el("btnRefresh").onclick = refreshBills;
-el("month").onchange = refreshBills;
+el("btnRefresh").onclick = showMonthBills;
+el("month").onchange = () => {
+  el("genMsg").textContent = "";
+  el("mailMsg").textContent = "";
+  showMonthBills();
+};
 
 window.onJobDone = (p) => {
-  if (p.kind === "generate" || p.kind === "email") {
+  if (p.kind === "generate") {
+    const month = (p.detail && p.detail.month) || el("month").value;
+    if (!pendingGenerateJob || p.job_id !== pendingGenerateJob) return;
+    pendingGenerateJob = null;
+    if (month) generatedMonths.add(month);
     el("genMsg").textContent = p.message;
     el("genMsg").className = "msg ok";
-    if (p.kind === "email") {
-      el("mailMsg").textContent = p.message;
-      el("mailMsg").className = "msg ok";
-    }
+    if (el("month").value === month) refreshBills();
+    return;
+  }
+  if (p.kind === "email") {
+    if (!generatedMonths.has(el("month").value)) return;
+    el("mailMsg").textContent = p.message;
+    el("mailMsg").className = "msg ok";
     refreshBills();
   }
 };

@@ -72,7 +72,18 @@ async function pollProgress() {
         window.onJobError(p);
       }
     }
-    if (p.kind === "model" && p.status === "done") refreshModel();
+    window._ocrRunning = !!(p.ocr_busy || (p.status === "running" && p.kind === "ocr"));
+    refreshModel();
+    const ocrLive = p.ocr_busy || (p.status === "running" && p.kind === "ocr");
+    if (ocrLive) window._sawOcr = true;
+    if (window._sawOcr && !ocrLive && p.status !== "done") {
+      const um = el("uploadMsg");
+      if (um) {
+        um.textContent = "OCR stopped before it finished. Submit the photos again.";
+        um.className = "msg err";
+      }
+      window._sawOcr = false;
+    }
   } catch (_) {}
 }
 

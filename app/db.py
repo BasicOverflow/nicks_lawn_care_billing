@@ -73,6 +73,8 @@ _MIGRATIONS = (
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS sort_order INTEGER",
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS mowing_group TEXT",
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS hedge_roster BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS sheet_kind TEXT",
+    "ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
 )
 
 
@@ -186,6 +188,79 @@ def get_client_by_name(conn, name: str) -> dict | None:
         "SELECT * FROM clients WHERE lower(trim(name)) = lower(trim(%s))",
         (name,),
     ).fetchone()
+
+
+def save_typed_client(
+    conn,
+    *,
+    client_id: int | None,
+    name: str,
+    address: str | None,
+    phone: str | None,
+    email: str | None,
+    billing_notes: str | None,
+    mow_price: float | None,
+    hedge_price: float | None,
+    prefer_mail: bool,
+) -> int:
+    """Write a hand-entered roster row. Blank prices clear the stored price."""
+    name = name.strip()
+    if not name:
+        raise ValueError("name required")
+    other = get_client_by_name(conn, name)
+    hedge_roster = hedge_price is not None
+    if client_id:
+        if other and int(other["id"]) != int(client_id):
+            raise ValueError(f"{name} is already on file")
+        if not get_client(conn, int(client_id)):
+            raise ValueError(f"Client {client_id} was not found")
+        conn.execute(
+            """
+            UPDATE clients SET
+              name = %s,
+              address = %s,
+              phone = %s,
+              email = %s,
+              billing_notes = %s,
+              mow_price = %s,
+              hedge_price = %s,
+              hedge_roster = %s,
+              prefer_mail = %s,
+              updated_at = NOW()
+            WHERE id = %s
+            """,
+            (
+                name, address, phone, email, billing_notes,
+                mow_price, hedge_price, hedge_roster, bool(prefer_mail),
+                int(client_id),
+            ),
+        )
+        return int(client_id)
+    if other:
+        return save_typed_client(
+            conn,
+            client_id=int(other["id"]),
+            name=name,
+            address=address,
+            phone=phone,
+            email=email,
+            billing_notes=billing_notes,
+            mow_price=mow_price,
+            hedge_price=hedge_price,
+            prefer_mail=prefer_mail,
+        )
+    return upsert_client(
+        conn,
+        name=name,
+        email=email,
+        phone=phone,
+        address=address,
+        billing_notes=billing_notes,
+        mow_price=mow_price,
+        hedge_price=hedge_price,
+        hedge_roster=hedge_roster,
+        prefer_mail=prefer_mail,
+    )
 
 
 def write_office_knowledge(
@@ -318,17 +393,20 @@ def months_with_work(conn) -> list[str]:
 
 
 def save_upload_job(conn, job_id: str, status: str, progress_msg: str = "",
-                    extract: Any = None, s3_prefix: str | None = None, month: str | None = None) -> None:
+                    extract: Any = None, s3_prefix: str | None = None, month: str | None = None,
+                    sheet_kind: str | None = None) -> None:
     conn.execute(
         """
-        INSERT INTO upload_jobs (id, status, progress_msg, extract_json, s3_prefix, month)
-        VALUES (%s,%s,%s,%s::jsonb,%s,%s)
+        INSERT INTO upload_jobs (id, status, progress_msg, extract_json, s3_prefix, month, sheet_kind, updated_at)
+        VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s, NOW())
         ON CONFLICT (id) DO UPDATE SET
           status = EXCLUDED.status,
           progress_msg = EXCLUDED.progress_msg,
           extract_json = COALESCE(EXCLUDED.extract_json, upload_jobs.extract_json),
           s3_prefix = COALESCE(EXCLUDED.s3_prefix, upload_jobs.s3_prefix),
-          month = COALESCE(EXCLUDED.month, upload_jobs.month)
+          month = COALESCE(EXCLUDED.month, upload_jobs.month),
+          sheet_kind = COALESCE(EXCLUDED.sheet_kind, upload_jobs.sheet_kind),
+          updated_at = NOW()
         """,
         (
             job_id,
@@ -337,8 +415,41 @@ def save_upload_job(conn, job_id: str, status: str, progress_msg: str = "",
             json.dumps(extract) if extract is not None else None,
             s3_prefix,
             month,
+            sheet_kind,
         ),
     )
+
+
+def save_review_draft(conn, job_id: str, extract: dict, month: str | None, sheet_kind: str | None) -> dict | None:
+    """Write in-progress table edits. Leaves a stored job alone."""
+    row = conn.execute(
+        """
+        UPDATE upload_jobs SET
+          extract_json = %s::jsonb,
+          month = COALESCE(%s, month),
+          sheet_kind = COALESCE(%s, sheet_kind),
+          updated_at = NOW()
+        WHERE id = %s AND status = 'done'
+        RETURNING id, month, sheet_kind, updated_at
+        """,
+        (json.dumps(extract), month or None, sheet_kind or None, job_id),
+    ).fetchone()
+    return row
+
+
+def clear_review(conn, job_id: str) -> dict | None:
+    """Drop an open review without writing clients or work."""
+    return conn.execute(
+        """
+        UPDATE upload_jobs SET
+          status = 'cleared',
+          progress_msg = 'Review cleared',
+          updated_at = NOW()
+        WHERE id = %s AND status = 'done'
+        RETURNING id, status, updated_at
+        """,
+        (job_id,),
+    ).fetchone()
 
 
 def get_upload_job(conn, job_id: str) -> dict | None:
@@ -493,6 +604,20 @@ def patch_work_item(conn, work_id: int, *, description=None, amount=None, month=
 
 def delete_work_item(conn, work_id: int) -> None:
     conn.execute("DELETE FROM work_items WHERE id = %s", (work_id,))
+
+
+def delete_month_work(conn, month: str) -> dict:
+    """Remove stored work and generated bills for one YYYY-MM. Clients stay."""
+    month = (month or "").strip()
+    work = conn.execute(
+        "DELETE FROM work_items WHERE month = %s RETURNING id",
+        (month,),
+    ).fetchall()
+    bills = conn.execute(
+        "DELETE FROM bills WHERE month = %s RETURNING id",
+        (month,),
+    ).fetchall()
+    return {"month": month, "work_items": len(work), "bills": len(bills)}
 
 
 def upsert_bill(conn, *, month: str, client_id: int, s3_key: str) -> int:

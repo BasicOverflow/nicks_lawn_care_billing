@@ -21,8 +21,9 @@ from .schemas import (
     AcceptedJob,
     ChatRequest,
     CommitJob,
-    CorrectJob,
     GenerateBills,
+    ClientRoster,
+    ReviewDraft,
     ModelStatus,
     ProgressView,
     SaveBill,
@@ -37,7 +38,7 @@ router = APIRouter(prefix="/api")
 def progress():
     """Current background job, plus how many OCR batches are waiting.
 
-    The UI polls this while a model deploy, OCR pass, correction, chat reply,
+    The UI polls this while a model deploy, OCR pass, chat reply,
     bill generation, or email send is running. `status` is `idle`, `running`,
     `done`, `error`, or `cancelled`. `detail` holds the result when the job finishes.
     """
@@ -108,17 +109,19 @@ async def upload(
         description="Billing month these sheets belong to, YYYY-MM.",
     ),
     sheet_kind: str = Form(
-        "mowing",
-        description="mowing reads the lawn price column. hedges reads the hedge price column.",
+        "work",
+        description="Ignored. Uploaded photos are always a work-completed log.",
     ),
 ):
-    """Queue sheet photos for knowledge-guided OCR.
+    """Queue work-completed photos for knowledge-guided OCR.
 
-    Files are saved to object storage under `uploads/{job_id}/`, then read by
-    Qwen. If another batch is already running, this one waits. Poll
-    `GET /api/progress` for the merged tables and any conflicts with stored
-    client rows. Confirm with `POST /api/jobs/{job_id}/commit`.
+    Mowing prices and hedge prices are typed on the Data page, not photographed.
+    Files are saved under `uploads/{job_id}/`, then read by Qwen. If another
+    batch is already running, this one waits. Poll `GET /api/progress` for the
+    merged tables. Confirm with `POST /api/jobs/{job_id}/commit`.
     """
+    del sheet_kind
+    sheet_kind = "work"
     if not files:
         raise HTTPException(400, "No files")
 
@@ -152,6 +155,7 @@ async def upload(
             "Queued…" if state == "queued" else "OCR starting…",
             s3_prefix=f"uploads/{jid}/",
             month=month,
+            sheet_kind=sheet_kind,
         )
 
     def worker(item):
@@ -193,10 +197,8 @@ async def upload(
             with db.connect() as conn:
                 db.save_upload_job(
                     conn, item.job_id, "done", "OCR complete",
-                    extract=merged, month=item.month,
+                    extract=merged, month=item.month, sheet_kind=item.sheet_kind,
                 )
-                rows = knowledge.extract_rows(merged)
-                conflicts = knowledge.find_conflicts(conn, rows, item.month)
             qsnap = ocr_queue.snapshot()
             jobs.done(
                 "OCR complete — review the table",
@@ -205,7 +207,6 @@ async def upload(
                     "month": item.month,
                     "sheet_kind": item.sheet_kind,
                     "extract": merged,
-                    "conflicts": conflicts,
                     "queue_depth": qsnap["queue_depth"],
                 },
             )
@@ -284,73 +285,97 @@ def get_job(
     }
 
 
-@router.post("/jobs/{job_id}/correct", tags=["uploads"], response_model=AcceptedJob)
-async def correct_job(
-    job_id: str = ApiPath(..., description="Upload id whose OCR JSON should be rewritten."),
-    body: CorrectJob = ...,
-):
-    """Re-read the sheet with a written instruction and replace the OCR JSON.
-
-    Needs the model loaded. The photo from the original upload is sent again
-    when it is still on disk. Returns a new progress `job_id`. The upload id in
-    the path stays the record that gets overwritten. When the job finishes,
-    `detail.extract` is the replacement and `detail.conflicts` lists clashes
-    with data already stored for that month.
-    """
-    instruction = body.instruction.strip()
-    if not instruction:
-        raise HTTPException(400, "instruction required")
-    with db.connect() as conn:
-        row = db.get_upload_job(conn, job_id)
+def _review_payload(row: dict | None, closed_status: str | None = None) -> dict:
     if not row or not row.get("extract_json"):
-        raise HTTPException(404, "job/extract missing")
+        return {
+            "job_id": None,
+            "month": None,
+            "sheet_kind": None,
+            "updated_at": None,
+            "extract": None,
+            "closed_status": closed_status,
+        }
     extract = row["extract_json"]
     if isinstance(extract, str):
         extract = json.loads(extract)
-    month = body.month or row.get("month") or ""
-    jid = jobs.new_job("ocr", "Applying correction…")
-
-    def run():
-        try:
-            import ocr
-
-            local = config.TMP_DIR / job_id
-            img = next(local.glob("*"), None) if local.is_dir() else None
-            fixed = ocr.apply_correction(img, extract, instruction)
-            with db.connect() as conn:
-                db.save_upload_job(conn, job_id, "done", "Corrected", extract=fixed)
-                rows = knowledge.extract_rows(fixed)
-                conflicts = knowledge.find_conflicts(conn, rows, month) if month else []
-            jobs.done(
-                "Correction applied",
-                detail={"job_id": job_id, "extract": fixed, "conflicts": conflicts},
-            )
-        except Exception as e:
-            jobs.fail(str(e))
-
-    threading.Thread(target=run, daemon=True).start()
-    return {"job_id": jid}
+    stamp = row.get("updated_at")
+    return {
+        "job_id": row["id"],
+        "month": row.get("month"),
+        "sheet_kind": row.get("sheet_kind"),
+        "updated_at": stamp.isoformat() if hasattr(stamp, "isoformat") else stamp,
+        "extract": extract,
+    }
 
 
-@router.get("/jobs/{job_id}/conflicts", tags=["uploads"])
-def job_conflicts(
-    job_id: str = ApiPath(..., description="Upload id to compare with stored clients."),
-    month: str = Query(..., description="Month to compare against stored work, YYYY-MM."),
-):
-    """Rows in this OCR result that disagree with clients or prices already saved.
+@router.get("/review/open", tags=["uploads"])
+def review_open():
+    """The newest OCR result that has not been stored yet.
 
-    Each conflict names the client and which field differs. `rows` is the full
-    parsed table the check used. Nothing is written.
+    Every browser loads this, so a review started on a phone is the same
+    table on a computer.
     """
     with db.connect() as conn:
-        row = db.get_upload_job(conn, job_id)
-        if not row or not row.get("extract_json"):
-            raise HTTPException(404)
-        extract = row["extract_json"]
-        if isinstance(extract, str):
-            extract = json.loads(extract)
-        rows = knowledge.extract_rows(extract)
-        return {"conflicts": knowledge.find_conflicts(conn, rows, month), "rows": rows}
+        row = conn.execute(
+            """
+            SELECT id, month, sheet_kind, updated_at, extract_json
+            FROM upload_jobs
+            WHERE status = 'done' AND extract_json IS NOT NULL
+            ORDER BY updated_at DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        closed = None
+        if not row:
+            latest = conn.execute(
+                """
+                SELECT status FROM upload_jobs
+                ORDER BY updated_at DESC NULLS LAST, created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if latest and latest.get("status") in ("cleared", "stored"):
+                closed = latest["status"]
+    return _review_payload(row, closed)
+
+
+@router.put("/jobs/{job_id}/draft", tags=["uploads"])
+def save_draft(
+    job_id: str = ApiPath(..., description="Upload id of the open review."),
+    body: ReviewDraft = ...,
+):
+    """Save table edits without storing them as clients or work.
+
+    Other open browsers pick this up from `GET /api/review/open`.
+    """
+    if not body.extract:
+        raise HTTPException(400, "extract required")
+    with db.connect() as conn:
+        row = db.save_review_draft(
+            conn, job_id, body.extract, body.month, "work",
+        )
+    if not row:
+        raise HTTPException(404, "open review not found")
+    stamp = row.get("updated_at")
+    return {
+        "job_id": row["id"],
+        "month": row.get("month"),
+        "sheet_kind": row.get("sheet_kind"),
+        "updated_at": stamp.isoformat() if hasattr(stamp, "isoformat") else stamp,
+    }
+
+
+@router.post("/jobs/{job_id}/clear", tags=["uploads"])
+def clear_job(job_id: str = ApiPath(..., description="Upload id of the open review to drop.")):
+    """Remove the open review tables without saving them as clients or work.
+
+    Other open browsers drop the same review on their next refresh.
+    """
+    with db.connect() as conn:
+        row = db.clear_review(conn, job_id)
+    if not row:
+        raise HTTPException(404, "open review not found")
+    return {"ok": True, "job_id": row["id"]}
 
 
 @router.post("/jobs/{job_id}/commit", tags=["uploads"])
@@ -358,38 +383,41 @@ async def commit_job(
     job_id: str = ApiPath(..., description="Upload id whose reviewed extract should be stored."),
     body: CommitJob = ...,
 ):
-    """Store the reviewed OCR table as clients and work items for the month.
+    """Store the reviewed work-completed table as work lines for the month.
 
-    New clients are inserted. Matching clients are updated. Work lines are added
-    for the month. If the same client already has different prices or contact
-    info, `conflict_nl` says which side wins. The response counts what was
-    written and includes the resolutions the model chose.
+    The body `extract` is the table after in-place edits. New names are added
+    as clients. Contact details and prices already typed on a client stay as
+    they are. Each plain day becomes a mowing line at that client's mowing
+    price. A day marked with h becomes a hedge line at the hedge price. A job
+    name with a dollar amount written on the sheet becomes its own line.
     """
     month = body.month
     if not month:
         raise HTTPException(400, "month required (YYYY-MM)")
-    sheet_kind = body.sheet_kind or "mowing"
-    conflict_nl = body.conflict_nl.strip()
+    sheet_kind = "work"
     with db.connect() as conn:
         row = db.get_upload_job(conn, job_id)
-        if not row or not row.get("extract_json"):
-            raise HTTPException(404)
-        extract = row["extract_json"]
-        if isinstance(extract, str):
-            extract = json.loads(extract)
-        rows = knowledge.extract_rows(extract)
-        conflicts = knowledge.find_conflicts(conn, rows, month)
-        resolutions = chatdata.resolve_conflicts_nl(conflicts, conflict_nl) if conflicts else {}
+        if body.extract:
+            extract = body.extract
+        else:
+            if not row or not row.get("extract_json"):
+                raise HTTPException(404)
+            extract = row["extract_json"]
+            if isinstance(extract, str):
+                extract = json.loads(extract)
+        if not extract:
+            raise HTTPException(404, "extract missing")
+        db.save_upload_job(
+            conn, job_id, "stored", "Stored",
+            extract=extract, month=month,
+        )
         result = knowledge.confirm_extract(
             conn,
             extract,
             month=month,
             source_job_id=job_id,
-            resolutions=resolutions,
             sheet_kind=sheet_kind,
         )
-        result["conflicts_resolved"] = len(conflicts)
-        result["resolutions"] = resolutions
     return result
 
 
@@ -447,15 +475,70 @@ def months():
         return {"months": db.months_with_work(conn)}
 
 
+def _public_client(row: dict) -> dict:
+    def num(value):
+        return float(value) if value is not None else None
+
+    return {
+        "id": int(row["id"]),
+        "name": row.get("name") or "",
+        "address": row.get("address") or "",
+        "phone": row.get("phone") or "",
+        "email": row.get("email") or "",
+        "billing_notes": row.get("billing_notes") or "",
+        "mow_price": num(row.get("mow_price")),
+        "hedge_price": num(row.get("hedge_price")),
+        "prefer_mail": bool(row.get("prefer_mail")),
+    }
+
+
 @router.get("/clients", tags=["knowledge"])
 def clients():
     """Every client on file: name, contact, mow price, and hedge price.
 
-    This is the knowledge base OCR uses when it reads a new sheet. Prices are
-    dollars. Missing prices are null.
+    These rows are typed in. Prices are dollars. Missing prices are null.
+    OCR uses the names when it reads a work-completed photo.
     """
     with db.connect() as conn:
-        return {"clients": db.list_clients(conn)}
+        return {"clients": [_public_client(row) for row in db.list_clients(conn)]}
+
+
+@router.post("/clients", tags=["knowledge"])
+def save_clients(body: ClientRoster):
+    """Save the typed roster: names, contact, mowing prices, and hedge prices.
+
+    A blank price clears that price. A row with no name is skipped. Matching
+    an existing name updates that client.
+    """
+    saved = 0
+    with db.connect() as conn:
+        for item in body.clients:
+            name = (item.name or "").strip()
+            if not name:
+                continue
+
+            def blank(value: str) -> str | None:
+                text = (value or "").strip()
+                return text or None
+
+            try:
+                db.save_typed_client(
+                    conn,
+                    client_id=item.id,
+                    name=name,
+                    address=blank(item.address),
+                    phone=blank(item.phone),
+                    email=blank(item.email),
+                    billing_notes=blank(item.billing_notes),
+                    mow_price=item.mow_price,
+                    hedge_price=item.hedge_price,
+                    prefer_mail=item.prefer_mail,
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+            saved += 1
+        rows = [_public_client(row) for row in db.list_clients(conn)]
+    return {"saved": saved, "clients": rows}
 
 
 @router.post("/billing/generate", tags=["billing"], response_model=AcceptedJob)

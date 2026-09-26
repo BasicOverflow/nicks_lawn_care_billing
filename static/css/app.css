@@ -19,7 +19,7 @@ a { color: var(--accent); }
 .top {
   background: var(--panel);
   border-bottom: 1px solid var(--line);
-  padding: .75rem 1rem;
+  padding: .55rem .4rem;
   display: flex;
   flex-wrap: wrap;
   gap: .75rem 1.25rem;
@@ -69,7 +69,7 @@ button, .btn {
   display: inline-block;
 }
 button.secondary, .btn.secondary { background: #5c5c5c; }
-button:disabled { opacity: .5; cursor: not-allowed; }
+button:disabled, .btn.is-disabled { opacity: .5; cursor: not-allowed; pointer-events: none; }
 button.linkish {
   background: transparent;
   color: var(--accent);
@@ -78,17 +78,18 @@ button.linkish {
   text-decoration: underline;
 }
 main {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 1rem 1rem 3rem;
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: .5rem 15% 2.5rem;
 }
 h1 { font-size: 1.35rem; margin: 0 0 .35rem; }
 .hint { color: var(--muted); font-size: .92rem; margin: 0 0 1rem; }
 .card {
   background: var(--panel);
   border: 1px solid var(--line);
-  padding: 1rem;
-  margin: 0 0 1rem;
+  padding: .55rem .45rem;
+  margin: 0 0 .75rem;
 }
 .card h2 { margin: 0 0 .65rem; font-size: 1.05rem; }
 .card h3, .table-title { margin: .75rem 0 .4rem; font-size: .95rem; }
@@ -142,12 +143,56 @@ th, td {
   vertical-align: top;
 }
 th { background: #f0ebe2; }
+td input.cell, th input.cell {
+  width: 100%;
+  min-width: 4rem;
+  border: 0;
+  background: transparent;
+  padding: .15rem .1rem;
+  border-radius: 0;
+}
+td.marks { min-width: 18rem; }
+.mark-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  align-items: center;
+}
+.mark-wrap { display: inline-flex; align-items: center; gap: 0; }
+input.mark {
+  width: 3rem;
+  flex: 0 0 auto;
+  text-align: center;
+  padding: .28rem .3rem;
+  background: #fff;
+}
+input.mark.wide {
+  width: 12rem;
+  text-align: left;
+}
+button.mark-x, button.mark-add {
+  width: auto;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: .1rem .2rem;
+  cursor: pointer;
+  font-size: .85rem;
+}
+button.mark-add { border: 1px dashed var(--line); border-radius: 4px; padding: .25rem .45rem; }
+td input.cell:focus, th input.cell:focus {
+  background: #fff;
+  outline: 1px solid var(--accent);
+}
+td.row-tools { width: 1%; white-space: nowrap; }
+.table-scroll { overflow-x: auto; }
+#clientWrap input.cell[type="number"] { min-width: 4.5rem; }
 .msg { margin-top: .5rem; font-size: .9rem; }
 .msg.err { color: var(--err); }
 .msg.ok { color: var(--accent); }
 .conflicts {
   margin: 1rem 0;
-  padding: .75rem;
+  padding: .5rem .45rem;
   border: 1px solid #e0c9a8;
   background: #fbf6ee;
 }
@@ -163,7 +208,7 @@ th { background: #f0ebe2; }
   max-height: min(70vh, 640px);
 }
 .chat-header {
-  padding: .85rem 1rem .55rem;
+  padding: .6rem .5rem .4rem;
   border-bottom: 1px solid var(--line);
 }
 .chat-header-top {
@@ -187,7 +232,7 @@ th { background: #f0ebe2; }
   overflow-y: auto;
   border: 0;
   background: linear-gradient(180deg, #f7f5f0 0%, #f3f1eb 100%);
-  padding: 1rem .85rem;
+  padding: .75rem .5rem;
   margin: 0;
   display: flex;
   flex-direction: column;
@@ -268,7 +313,7 @@ th { background: #f0ebe2; }
   display: flex;
   gap: .5rem;
   align-items: flex-end;
-  padding: .75rem .85rem;
+  padding: .55rem .5rem;
   border-top: 1px solid var(--line);
   background: #fff;
 }
@@ -293,7 +338,7 @@ th { background: #f0ebe2; }
   padding: .55rem 1rem;
   min-height: 42px;
 }
-.chat-status { margin: 0; padding: 0 .85rem .65rem; font-size: .85rem; background: #fff; }
+.chat-status { margin: 0; padding: 0 .5rem .5rem; font-size: .85rem; background: #fff; }
 
 .pdf-stack { display: flex; flex-direction: column; gap: 1.25rem; margin-top: .75rem; }
 .pdf-block h3 { margin: 0; font-size: 1rem; }
@@ -307,7 +352,7 @@ th { background: #f0ebe2; }
 }
 .bill-editor {
   margin: 0 0 .75rem;
-  padding: .75rem;
+  padding: .5rem .45rem;
   border: 1px solid var(--line);
   background: #faf8f4;
 }
@@ -349,7 +394,8 @@ th { background: #f0ebe2; }
   white-space: nowrap;
 }
 @media (max-width: 640px) {
-  .top { padding: .65rem .75rem; }
+  .top { padding: .5rem .35rem; }
+  main { padding: .45rem 15% 2rem; }
   table { display: block; overflow-x: auto; }
   .pdf-frame { height: 60vh; min-height: 320px; }
 }

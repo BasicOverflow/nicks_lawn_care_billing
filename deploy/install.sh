@@ -32,21 +32,32 @@ fi
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 
+# One app tree. Secrets, sheet photos, and gold labels stay off the guest.
+tar_app() {
+  local src="$1"
+  tar -C "$src" -cf - \
+    --exclude .git \
+    --exclude '.venv' \
+    --exclude '__pycache__' \
+    --exclude '*.pyc' \
+    --exclude '.env' \
+    --exclude 'bench_results' \
+    --exclude 'ground_truth' \
+    --exclude '_archive_old_photos' \
+    --exclude 'ocr_bench' \
+    --exclude '.tmp' \
+    --exclude 'data' \
+    --exclude 'update_new_sheet_gold.py' \
+    .
+}
+
 if [[ -n "$SRC_DIR" ]]; then
   echo "install: using local tree ${SRC_DIR}"
   if [[ ! -f "${SRC_DIR}/run.py" ]]; then
     echo "install: ${SRC_DIR}/run.py not found" >&2
     exit 1
   fi
-  tar -C "$SRC_DIR" -cf - \
-    --exclude .git \
-    --exclude '.venv' \
-    --exclude '__pycache__' \
-    --exclude '*.pyc' \
-    --exclude 'bench_results' \
-    --exclude 'ground_truth' \
-    --exclude '_archive_old_photos' \
-    . | tar -C "$WORK_DIR" -xf -
+  tar_app "$SRC_DIR" | tar -C "$WORK_DIR" -xf -
 else
   need_cmd curl
   if ! command -v git >/dev/null 2>&1; then
@@ -132,17 +143,9 @@ pct exec "$CTID" -- bash -lc "mkdir -p $(dirname "$ENV_FILE") $(dirname "$APP_RO
 pct push "$CTID" "$CREDS_TMP" "$ENV_FILE"
 rm -f "$CREDS_TMP"
 
-echo "install: syncing app tree into CT ${APP_ROOT}"
+echo "install: syncing the whole app tree into CT ${APP_ROOT}"
 pct exec "$CTID" -- bash -lc "rm -rf ${APP_ROOT} && mkdir -p ${APP_ROOT}"
-tar -C "$WORK_DIR" -cf - \
-  --exclude .git \
-  --exclude '.venv' \
-  --exclude '__pycache__' \
-  --exclude '*.pyc' \
-  --exclude '.env' \
-  --exclude 'bench_results' \
-  --exclude 'ground_truth' \
-  . | pct exec "$CTID" -- tar -C "$APP_ROOT" -xf -
+tar_app "$WORK_DIR" | pct exec "$CTID" -- tar -C "$APP_ROOT" -xf -
 
 echo "install: bootstrap inside CT"
 pct exec "$CTID" -- env \

@@ -6,6 +6,8 @@ Supports read answers and write mutations (update client/work, add/delete work).
 from __future__ import annotations
 
 import json
+import re
+from datetime import date
 from typing import Any
 
 from . import db
@@ -26,6 +28,7 @@ CHAT_REPLY_SCHEMA = {
                             "update_work",
                             "add_work",
                             "delete_work",
+                            "delete_work_month",
                         ],
                     },
                     "client_id": {"type": ["integer", "null"]},
@@ -50,72 +53,92 @@ CHAT_REPLY_SCHEMA = {
 }
 
 
-def knowledge_snapshot(conn, *, limit_work: int = 400, limit_clients: int = 200) -> str:
-    clients = db.list_clients(conn)[:limit_clients]
+def knowledge_snapshot(conn, *, limit_work: int = 80, limit_clients: int = 120) -> str:
+    """Client and work list small enough for the vision model's context.
+
+    Prompts past roughly 14,000 characters make the server return an empty
+    reply, which the chat showed as "No response from model."
+    """
+    clients = db.list_clients(conn)
     work = list(
         conn.execute(
             """
-            SELECT w.id, w.client_id, w.month, w.description, w.amount, w.day_or_note,
+            SELECT w.id, w.client_id, w.month, w.description, w.amount,
                    c.name AS client_name
             FROM work_items w
             JOIN clients c ON c.id = w.client_id
             ORDER BY w.month DESC, c.name, w.id
             LIMIT %s
             """,
-            (limit_work,),
+            (max(limit_work, 200),),
         ).fetchall()
     )
     bills = list(
         conn.execute(
             """
-            SELECT b.id, b.month, b.client_id, c.name AS client_name, c.email,
+            SELECT b.id, b.month, b.client_id, c.name AS client_name,
                    b.emailed_at IS NOT NULL AS emailed
             FROM bills b JOIN clients c ON c.id = b.client_id
             ORDER BY b.month DESC, c.name
-            LIMIT 200
+            LIMIT 80
             """
         ).fetchall()
     )
-    payload = {
-        "clients": [
-            {
-                "id": int(c["id"]),
-                "name": c["name"],
-                "email": c.get("email"),
-                "phone": c.get("phone"),
-                "address": c.get("address"),
-                "billing_notes": c.get("billing_notes"),
-                "mow_price": float(c["mow_price"]) if c.get("mow_price") is not None else None,
-                "hedge_price": float(c["hedge_price"]) if c.get("hedge_price") is not None else None,
-            }
-            for c in clients
-        ],
-        "work_items": [
-            {
-                "id": int(w["id"]),
-                "client_id": int(w["client_id"]),
-                "client": w["client_name"],
-                "month": w["month"],
-                "description": w.get("description"),
-                "amount": float(w["amount"]) if w.get("amount") is not None else None,
-            }
-            for w in work
-        ],
-        "bills": [
-            {
-                "id": int(b["id"]),
-                "client_id": int(b["client_id"]),
-                "client": b["client_name"],
-                "month": b["month"],
-                "email": b.get("email"),
-                "emailed": bool(b.get("emailed")),
-            }
-            for b in bills
-        ],
-    }
-    text = json.dumps(payload, ensure_ascii=False, default=str)
-    if len(text) > 60000:
-        text = text[:60000] + "…"
+    month_counts: dict[str, int] = {}
+    for row in conn.execute(
+        "SELECT month, count(*) AS n FROM work_items GROUP BY month"
+    ).fetchall():
+        month_counts[str(row["month"])] = int(row["n"])
+
+    def pack(n_clients: int, n_work: int, n_bills: int) -> str:
+        payload = {
+            "client_count": len(clients),
+            "work_counts_by_month": month_counts,
+            "clients_truncated": n_clients < len(clients),
+            "clients": [
+                {
+                    "id": int(c["id"]),
+                    "name": c["name"],
+                    "email": c.get("email") or "",
+                    "mow_price": float(c["mow_price"]) if c.get("mow_price") is not None else None,
+                    "hedge_price": float(c["hedge_price"]) if c.get("hedge_price") is not None else None,
+                }
+                for c in clients[:n_clients]
+            ],
+            "work_items": [
+                {
+                    "id": int(w["id"]),
+                    "client_id": int(w["client_id"]),
+                    "client": w["client_name"],
+                    "month": w["month"],
+                    "description": w.get("description"),
+                    "amount": float(w["amount"]) if w.get("amount") is not None else None,
+                }
+                for w in work[:n_work]
+            ],
+            "bills": [
+                {
+                    "id": int(b["id"]),
+                    "client_id": int(b["client_id"]),
+                    "client": b["client_name"],
+                    "month": b["month"],
+                    "emailed": bool(b.get("emailed")),
+                }
+                for b in bills[:n_bills]
+            ],
+        }
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+    n_clients, n_work, n_bills = min(limit_clients, len(clients)), min(limit_work, len(work)), min(40, len(bills))
+    text = pack(n_clients, n_work, n_bills)
+    while len(text) > 10000 and (n_clients > 15 or n_work > 10 or n_bills > 0):
+        if n_work > 10:
+            n_work = max(10, n_work // 2)
+        elif n_bills > 0:
+            n_bills = n_bills // 2
+        else:
+            n_clients = max(15, n_clients // 2)
+        text = pack(n_clients, n_work, n_bills)
     return text
 
 
@@ -201,6 +224,15 @@ def apply_mutations(conn, mutations: list[dict]) -> list[str]:
                     continue
                 db.delete_work_item(conn, int(wid))
                 applied.append(f"deleted work_item #{wid}")
+            elif op == "delete_work_month":
+                month = (raw.get("month") or "").strip()
+                if not re.fullmatch(r"20\d{2}-\d{2}", month):
+                    applied.append("skipped delete_work_month (month must be YYYY-MM)")
+                    continue
+                cleared = db.delete_month_work(conn, month)
+                applied.append(
+                    f"deleted {cleared['work_items']} work lines and {cleared['bills']} bills for {month}"
+                )
             else:
                 applied.append(f"skipped unknown op {op!r}")
         except Exception as e:
@@ -208,8 +240,76 @@ def apply_mutations(conn, mutations: list[dict]) -> list[str]:
     return applied
 
 
+_MONTH_NAMES = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sept": 9, "sep": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+
+def _wipe_month(question: str, *, today: date | None = None) -> str | None:
+    """YYYY-MM when the user asked to delete a whole month of work. Otherwise None.
+
+    This does not call the model. A month-wide delete is one statement, and
+    asking the model to list every work id was returning an empty reply.
+    """
+    text = (question or "").strip().lower()
+    if not re.search(r"\b(delete|remove|wipe|clear|erase|drop)\b", text):
+        return None
+    if not re.search(r"\b(work[-\s]?completed|work|jobs?|visits?|mows?|mowing|bills?|invoices?)\b", text):
+        return None
+    today = today or date.today()
+    explicit = re.search(r"\b(20\d{2})-(\d{2})\b", text)
+    if explicit:
+        month_n = int(explicit.group(2))
+        if 1 <= month_n <= 12:
+            return f"{explicit.group(1)}-{month_n:02d}"
+        return None
+    names = "|".join(sorted(_MONTH_NAMES, key=len, reverse=True))
+    named = re.search(rf"\b({names})\b(?:\s+(20\d{{2}}))?", text)
+    if not named:
+        return None
+    month_n = _MONTH_NAMES[named.group(1)]
+    if named.group(2):
+        year = int(named.group(2))
+    elif month_n <= today.month:
+        year = today.year
+    else:
+        year = today.year - 1
+    return f"{year}-{month_n:02d}"
+
+
 def answer(conn, question: str, history: list[dict[str, str]] | None = None) -> dict:
     """Chat: answer and optionally mutate datastore. Returns {answer, mutations_applied}."""
+    direct = _wipe_month(question)
+    if direct:
+        cleared = db.delete_month_work(conn, direct)
+        work_n = cleared["work_items"]
+        bill_n = cleared["bills"]
+        if work_n or bill_n:
+            reply = (
+                f"Deleted {work_n} work line{'' if work_n == 1 else 's'}"
+                f" and {bill_n} bill{'' if bill_n == 1 else 's'} for {direct}. "
+                "Clients and their prices were kept."
+            )
+        else:
+            reply = f"There was no work or bill stored for {direct}."
+        applied = [
+            f"deleted {work_n} work lines and {bill_n} bills for {direct}"
+        ]
+        return {"answer": reply, "mutations_applied": applied, "mutations": [
+            {"op": "delete_work_month", "month": direct}
+        ]}
+
     import ocr
     from ocr.chat import chat_text
     from ocr.jsonutil import try_parse_json
@@ -234,6 +334,8 @@ def answer(conn, question: str, history: list[dict[str, str]] | None = None) -> 
         "- update_work: set work_id and any of description,amount,month.\n"
         "- add_work: set client_id or client_name, month (YYYY-MM), description, amount.\n"
         "- delete_work: set work_id.\n"
+        "- delete_work_month: set month YYYY-MM to delete every work line and bill for that month. "
+        "Use this for 'delete all September work'. Do not emit one delete_work per row.\n"
         "Use ids from the snapshot. Never invent clients. Do not delete clients.\n"
         "If the user is only asking a question, mutations=[].\n"
         "If they ask to change data, include mutations and summarize them in reply.\n\n"
@@ -259,90 +361,12 @@ def answer(conn, question: str, history: list[dict[str, str]] | None = None) -> 
         if isinstance(raw_m, list):
             mutations = [m for m in raw_m if isinstance(m, dict)]
     if not reply:
-        # Fallback: treat raw model text as reply (no mutations)
-        reply = (text or "").strip() or "No response from model."
-        # strip accidental JSON fence
-        if reply.startswith("{"):
-            reply = "Done." if mutations else reply[:2000]
+        reply = (text or "").strip()
+    if not reply:
+        raise RuntimeError("The model returned no text.")
 
     applied = apply_mutations(conn, mutations) if mutations else []
     if applied:
         reply = reply.rstrip() + "\n\nChanges applied:\n- " + "\n- ".join(applied)
     return {"answer": reply, "mutations_applied": applied, "mutations": mutations}
 
-
-def resolve_conflicts_nl(
-    conflicts: list[dict[str, Any]],
-    instruction: str,
-) -> dict[str, str]:
-    """Map natural-language conflict instructions → {client_name: 'a'|'b'|'merge'}."""
-    if not conflicts:
-        return {}
-    if not (instruction or "").strip():
-        return {c["name"]: "b" for c in conflicts}
-
-    import ocr
-    from ocr.chat import chat_text
-    from ocr.jsonutil import try_parse_json
-
-    schema = {
-        "type": "object",
-        "properties": {
-            "resolutions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "choice": {"type": "string", "enum": ["a", "b", "merge"]},
-                        "note": {"type": "string"},
-                    },
-                    "required": ["name", "choice"],
-                },
-            }
-        },
-        "required": ["resolutions"],
-    }
-    compact = []
-    for c in conflicts:
-        compact.append(
-            {
-                "name": c["name"],
-                "issues": c.get("issues"),
-                "incoming": {
-                    "address": (c.get("incoming") or {}).get("address"),
-                    "price": (c.get("incoming") or {}).get("price"),
-                    "notes": (c.get("incoming") or {}).get("notes"),
-                },
-            }
-        )
-    prompt = (
-        "Resolve datastore conflicts for a lawn-care billing app.\n"
-        "For each conflict, choose:\n"
-        "  a = keep existing knowledge (ignore incoming for that client)\n"
-        "  b = prefer incoming sheet values (overwrite)\n"
-        "  merge = apply incoming updates (same as b for this app)\n\n"
-        f"Conflicts JSON:\n{json.dumps(compact, ensure_ascii=False)[:12000]}\n\n"
-        f"User instructions:\n{instruction.strip()}\n\n"
-        "Return JSON only with resolutions array."
-    )
-    text = chat_text(
-        ocr.MODEL_ID,
-        prompt,
-        max_tokens=1024,
-        temperature=0.0,
-        guided_json=True,
-        json_schema=schema,
-        schema_name="conflict_resolutions",
-    )
-    obj, _ = try_parse_json(text or "")
-    out: dict[str, str] = {c["name"]: "b" for c in conflicts}
-    if isinstance(obj, dict):
-        for item in obj.get("resolutions") or []:
-            if not isinstance(item, dict):
-                continue
-            name = (item.get("name") or "").strip()
-            choice = (item.get("choice") or "b").strip().lower()
-            if name and choice in ("a", "b", "merge"):
-                out[name] = "b" if choice == "merge" else choice
-    return out

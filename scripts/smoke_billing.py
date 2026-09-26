@@ -59,7 +59,7 @@ def main() -> None:
     with db.connect() as conn:
         db.save_upload_job(conn, jid, "done", "smoke", extract=extract, month=MONTH)
 
-    r = api("POST", f"/api/jobs/{jid}/confirm", {"month": MONTH, "sheet_kind": "mowing", "resolutions": {}})
+    r = api("POST", f"/api/jobs/{jid}/confirm", {"month": MONTH, "sheet_kind": "work"})
     print("confirm", r)
 
     # generate bills (sync via module if background is flaky — wait on progress)

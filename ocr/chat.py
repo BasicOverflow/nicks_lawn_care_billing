@@ -2,16 +2,37 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
 import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-from ray_hive.core.ray_utils import file_to_data_url, serve_base_url
-
 from .prompts import TABLE_JSON_SCHEMA
+
+
+def serve_base() -> str:
+    """Ray Serve HTTP root. Does not import ray (that pull needs jinja2 on the app)."""
+    explicit = (os.environ.get("RAY_SERVE_URL") or os.environ.get("RAY_SERVE") or "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    addr = os.environ.get("RAY_ADDRESS", "")
+    if addr.startswith("ray://"):
+        host = addr.removeprefix("ray://").split(":")[0]
+        return f"http://{host}:8000"
+    return "http://10.0.1.52:8000"
+
+
+def file_to_data_url(path: str | Path, mime: str | None = None) -> str:
+    path = Path(path)
+    if mime is None:
+        mime, _ = mimetypes.guess_type(str(path))
+        mime = mime or "application/octet-stream"
+    return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode()}"
+
 
 # Phone photos are ~5k px; shrink so vLLM VL encoders don't OOM / 500.
 # DeepSeek-OCR* crop tiling blows up past ~900px on the long edge.
@@ -46,6 +67,12 @@ def prepare_image(
 
     img = Image.open(path)
     img = ImageOps.exif_transpose(img).convert("RGB")
+    # Shrink before deskew / contrast. Phone photos are large enough that
+    # doing this on the full frame, four times at once, gets the app killed.
+    w, h = img.size
+    scale = max_edge / max(w, h)
+    if scale < 1.0:
+        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
     if novel_mode():
         try:
             img = perspective_rectify(img)
@@ -61,7 +88,7 @@ def prepare_image(
     w, h = img.size
     scale = max_edge / max(w, h)
     if scale < 1.0:
-        img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
     out = Path(tempfile.gettempdir()) / (
         f"nini_ocr_{os.getpid()}_{path.stem}_{os.urandom(4).hex()}.jpg"
     )
@@ -83,6 +110,7 @@ def chat_with_image(
     enhance: bool = True,
     contrast: bool = False,
     max_edge: int | None = None,
+    reuse_prepared: bool = False,
 ) -> str:
     is_deepseek = "deepseek" in model_id.lower() and "ocr" in model_id.lower()
     if temperature is None:
@@ -90,7 +118,9 @@ def chat_with_image(
     edge = DEEPSEEK_MAX_IMAGE_EDGE if is_deepseek else (
         max_edge if max_edge is not None else (NOVEL_IMAGE_EDGE if novel_mode() else MAX_IMAGE_EDGE)
     )
-    prepared = prepare_image(image_path, max_edge=edge, enhance=enhance, contrast=contrast)
+    prepared = image_path if reuse_prepared else prepare_image(
+        image_path, max_edge=edge, enhance=enhance, contrast=contrast
+    )
     try:
         messages = [
             {
@@ -113,7 +143,8 @@ def chat_with_image(
             schema_name=schema_name,
         )
     finally:
-        prepared.unlink(missing_ok=True)
+        if not reuse_prepared:
+            prepared.unlink(missing_ok=True)
 
 
 def chat_text(
@@ -194,7 +225,7 @@ def _chat_completions(
             "json_schema": {"name": schema_name, "schema": schema},
         }
 
-    url = f"{serve_base_url()}/{model_id}/v1/chat/completions"
+    url = f"{serve_base()}/{model_id}/v1/chat/completions"
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
@@ -236,11 +267,17 @@ def _chat_completions(
                     ((frame.get("choices") or [{}])[0].get("delta") or {}).get("content")
                 )
                 if delta:
-                    chunks.append(delta)
+                    chunks.append(str(delta))
                 # Some servers send full message on non-delta stream frames
                 msg = ((frame.get("choices") or [{}])[0].get("message") or {}).get("content")
                 if msg and not delta:
-                    chunks.append(msg)
+                    chunks.append(str(msg))
+                err = frame.get("error")
+                if err:
+                    message = err.get("message") if isinstance(err, dict) else str(err)
+                    raise RuntimeError(message[:500])
+        if not chunks:
+            raise RuntimeError("The model returned no text.")
         return "".join(chunks)
     except InferenceCancelled:
         raise
@@ -274,7 +311,7 @@ def _chat_completions_nonstream(
 
     raise_if_cancelled()
     req = urllib.request.Request(
-        f"{serve_base_url()}/{model_id}/v1/chat/completions",
+        f"{serve_base()}/{model_id}/v1/chat/completions",
         data=json.dumps(body).encode(),
         method="POST",
         headers={
@@ -315,7 +352,7 @@ def _try_server_abort(model_id: str, request_id: str) -> None:
     ):
         try:
             req = urllib.request.Request(
-                f"{serve_base_url()}{path}",
+                f"{serve_base()}{path}",
                 data=json.dumps({"request_ids": [request_id]}).encode(),
                 method="POST",
                 headers={"Content-Type": "application/json"},

@@ -496,6 +496,52 @@ PAGE_ORIENT_VERIFY_SCHEMA = {
 }
 
 
+def guided_work_prompt(names: list[str], columns: list[str], title: str | None = None) -> str:
+    """Visible work-log rows only. No roster address, phone, email, or price."""
+    col_line = " | ".join(columns)
+    title_bit = f'Title: "{title}".\n' if title else ""
+    if names:
+        who = "Look for these names and return a row only when that name is written on the page:\n" + "\n".join(
+            f"- {n}" for n in names
+        )
+    else:
+        who = "Return every row that is written in the table on this page."
+    return f"""
+This is a photo of a work-completed sheet, not a price list.
+{title_bit}Transcribe ONLY the table printed on the paper.
+
+Columns left to right, exactly as printed:
+{col_line}
+
+{who}
+
+Rules:
+- One row is one horizontal line on the paper.
+- Copy the name and everything written in the work cell on that line. Nothing else.
+- The numbers in that cell are days of this month. Each number is its own day. They are not a month/day date.
+- A cell that shows 9, then 16, then 23 means day 9, day 16, and day 23. Write every number, separated by spaces.
+- Do not join days with a slash or a hyphen. Do not drop a day to form a pair.
+- WRONG: "9/16" or "9/16/23" or "9/23"
+- RIGHT: "9 16 23"
+- A letter written on a day stays with that day. 19h is one mark. RIGHT: "9 16 19h 23"
+- Words written in the cell are details about a job. Copy them too, in the same cell, after the days they belong to.
+- RIGHT: "5 11 22 Bush trimming $50"
+- RIGHT: "14 paid"
+- Do not add address, phone, email, mowing price, hedge price, or billing notes. Those are not columns on this sheet and must not be copied from memory.
+- If the work cell is blank on the paper, use "".
+- Omit anyone who is not written on this page.
+- Do not add columns. Put every day and every job note for that person in the one work cell.
+
+Return ONLY JSON:
+{{
+  "title": {json.dumps(title)},
+  "tables": [{{"caption": null, "columns": {json.dumps(columns)}, "rows": [["...", "..."]]}}],
+  "notes": [],
+  "complete": true
+}}
+""".strip()
+
+
 def guided_header_prompt(sheet_kind: str) -> str:
     kind = (sheet_kind or "mowing").lower()
     hint = {
@@ -569,8 +615,8 @@ def guided_chunk_prompt(
     kind = (sheet_kind or "mowing").lower()
     value_hint = {
         "hedges": "Copy Address, Hedge price, and Notes cells for each listed contact that appears.",
-        "work": "Copy the DATE & WORK COMPLETED / days marks for each listed client that appears. Dates are not in the knowledge hints.",
-        "work_completed": "Copy the DATE & WORK COMPLETED / days marks for each listed client that appears. Dates are not in the knowledge hints.",
+        "work": "Copy every day number in DATE & WORK COMPLETED as its own day of the month, separated by spaces, plus any job words on that line. Never join them into a date like 9/16.",
+        "work_completed": "Copy every day number in DATE & WORK COMPLETED as its own day of the month, separated by spaces, plus any job words on that line. Never join them into a date like 9/16.",
         "mowing": "Copy Address, New Price (or Lawn), and Billing Address / Notes for each listed contact that appears.",
     }.get(kind, "Copy every cell on that contact's row.")
     return f"""

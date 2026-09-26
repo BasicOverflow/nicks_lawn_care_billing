@@ -2,8 +2,8 @@
 """Bench guided OCR using the same Postgres knowledge an upload uses.
 
 Gold JSON is loaded only after extract_sheet returns, and only to score.
-The run refuses to start if a filed hedge price is not in hedgesclientlist
-or if a prompt locator contains a dollar amount.
+Only work-completed fixtures are scored. The run refuses to start if a
+prompt locator contains a dollar amount.
 """
 
 from __future__ import annotations
@@ -44,12 +44,7 @@ _norm_name = _bench._norm_name
 
 
 def sheet_kind_for(fx: dict) -> str:
-    kind = str(fx.get("kind") or "").lower()
-    if "hedge" in kind:
-        return "hedges"
-    if "work" in kind:
-        return "work"
-    return "mowing"
+    return "work"
 
 
 def _tokens(name: str) -> list[str]:
@@ -177,16 +172,7 @@ def _weighted(per: list[dict], num_key: str, den_key: str) -> float | None:
 
 
 def assert_live_knowledge() -> dict[str, int]:
-    """OCR knowledge must be office files, and prompts must not contain prices."""
-    spec = importlib.util.spec_from_file_location(
-        "import_tmp_knowledge", ROOT / "scripts" / "import_tmp_knowledge.py"
-    )
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
-    office: dict[str, float | None] = {}
-    for rec in mod.load_hedges_office():
-        office[mod._norm_key(rec["name"])] = rec.get("hedge_price")
+    """Work-completed OCR hints must not contain prices or gold-file phrases."""
     from app import db
     from ocr.prompts import _locator_line
 
@@ -194,29 +180,19 @@ def assert_live_knowledge() -> dict[str, int]:
     counts: dict[str, int] = {}
     db.init_db()
     with db.connect() as conn:
-        for sk in ("mowing", "hedges", "work"):
-            rows = db.knowledge_records_for_sheet(conn, sk)
-            counts[sk] = len(rows)
-            for rec in rows:
-                notes = (rec.get("billing_notes") or "").lower()
-                for phrase in banned:
-                    if phrase in notes:
-                        raise SystemExit(
-                            f"{rec['name']} note contains {phrase!r}. "
-                            "That phrase came from a scored gold file, not an office template."
-                        )
-                line = _locator_line(rec, sk)
-                if re.search(r"\$\s*\d", line):
-                    raise SystemExit(f"OCR locator includes a dollar amount: {line}")
-                if sk != "hedges" or rec.get("hedge_price") is None:
-                    continue
-                allowed = office.get(mod._norm_key(rec["name"]))
-                got = float(rec["hedge_price"])
-                if allowed is None or abs(got - float(allowed)) > 0.01:
+        rows = db.knowledge_records_for_sheet(conn, "work")
+        counts["work"] = len(rows)
+        for rec in rows:
+            notes = (rec.get("billing_notes") or "").lower()
+            for phrase in banned:
+                if phrase in notes:
                     raise SystemExit(
-                        f"{rec['name']} hedge price {got} is not in hedgesclientlist. "
-                        "Refusing to bench with photographed prices in Postgres."
+                        f"{rec['name']} note contains {phrase!r}. "
+                        "That phrase came from a scored gold file, not an office template."
                     )
+            line = _locator_line(rec, "work")
+            if re.search(r"\$\s*\d", line):
+                raise SystemExit(f"OCR locator includes a dollar amount: {line}")
     return counts
 
 

@@ -23,6 +23,8 @@ def main() -> None:
     OUT.mkdir(parents=True)
     idx = json.loads((ROOT / "ground_truth" / "index.json").read_text(encoding="utf-8"))
     for fx in idx["fixtures"]:
+        if "work" not in str(fx.get("kind") or "").lower():
+            continue
         img = ROOT / fx["image"]
         dest = OUT / fx["id"]
         dest.mkdir()

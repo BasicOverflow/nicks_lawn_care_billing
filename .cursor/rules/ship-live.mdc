@@ -1,0 +1,12 @@
+---
+description: After local billing-app changes, update CT 118 and push GitHub
+alwaysApply: true
+---
+
+# Ship local billing changes
+
+When you change this app, finish by updating the live site and GitHub. Do this in the same turn as the change, without waiting to be asked.
+
+Live site: CT 118 `nicks-billing` on home-media (`10.0.0.20`), UI `http://10.0.0.60:8787`. Replace the whole tree with `deploy/install.sh` from a copy on the host (`SRC_DIR=/root/nicks-billing-src`). Do not copy individual files into the container. The guest keeps `/etc/nicks-billing.env`. Leave out `.env`, `ground_truth/`, photos, and `scripts/load_roster_sheets.py`.
+
+GitHub: commit and push `main` to `https://github.com/BasicOverflow/nicks_lawn_care_billing`. Include the app change. Do not commit `.env`, sheet photos, gold JSON, or scripts that contain client names, addresses, phones, or emails. Do not force-push.

@@ -1,4 +1,4 @@
-"""Confirm extracts into knowledge; simple conflict detection."""
+"""Turn a reviewed sheet table into clients and work items."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import re
 from typing import Any
 
 from . import db
+
+from ocr.work_marks import parse_work_marks
 
 
 def _cell(row: list, idx: int) -> str:
@@ -48,24 +50,10 @@ def extract_rows(extract: dict) -> list[dict]:
     return out
 
 
-def find_conflicts(conn, rows: list[dict], month: str) -> list[dict]:
-    """Compare incoming rows to existing clients / month work."""
-    conflicts = []
-    for r in rows:
-        existing = db.get_client_by_name(conn, r["name"])
-        if not existing:
-            continue
-        issues = []
-        if r.get("price") is not None:
-            for field, key in (("mow_price", "mow"), ("hedge_price", "hedge")):
-                old = existing.get(field)
-                if old is not None and abs(float(old) - float(r["price"])) > 0.01:
-                    issues.append({"field": field, "knowledge": float(old), "incoming": float(r["price"])})
-        if r.get("address") and existing.get("address") and r["address"] != existing["address"]:
-            issues.append({"field": "address", "knowledge": existing["address"], "incoming": r["address"]})
-        if issues:
-            conflicts.append({"name": r["name"], "client_id": existing["id"], "issues": issues, "incoming": r})
-    return conflicts
+def _stored_amount(value) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value)
 
 
 def confirm_extract(
@@ -74,46 +62,52 @@ def confirm_extract(
     *,
     month: str,
     source_job_id: str | None = None,
-    resolutions: dict | None = None,
-    sheet_kind: str = "mowing",
+    sheet_kind: str = "work",
 ) -> dict:
-    """Write rows into clients + work_items. resolutions: {name: 'a'|'b'|'merge'}."""
-    resolutions = resolutions or {}
+    """Store a reviewed work-completed sheet as one bill line per job.
+
+    A plain day is a mowing visit at that client's stored mowing price. A day
+    with h is a hedge visit at the stored hedge price. A written job name and
+    dollar amount is its own line, using that written price. Contact fields and
+    the stored prices themselves are left as they are.
+    """
+    del sheet_kind
     rows = extract_rows(extract)
-    written = 0
+    clients = 0
+    lines = 0
     for r in rows:
         name = r["name"]
-        res = resolutions.get(name, "b")  # default prefer incoming
-        existing = db.get_client_by_name(conn, name)
-        email = phone = None
-        notes = r.get("notes") or ""
-        if "@" in notes:
-            email = notes.split()[0] if notes.split() else notes
-        price = r.get("price")
-        mow = price if sheet_kind == "mowing" else None
-        hedge = price if sheet_kind == "hedges" else None
-        if existing and res == "a":
-            cid = existing["id"]
-        else:
-            cid = db.upsert_client(
-                conn,
-                name=name,
-                email=email,
-                address=r.get("address") or None,
-                billing_notes=notes or None,
-                mow_price=mow,
-                hedge_price=hedge,
-            )
-        # Work completed style: put day/note in description from all cells
-        desc = " | ".join(c for c in (r.get("cells") or [])[1:] if c.strip()) or notes or "service"
-        db.add_work_item(
-            conn,
-            client_id=cid,
-            month=month,
-            day_or_note=None,
-            description=desc[:500],
-            amount=price,
-            source_job_id=source_job_id,
+        cid = db.upsert_client(conn, name=name)
+        client = db.get_client(conn, cid) or {}
+        mow = _stored_amount(client.get("mow_price"))
+        hedge = _stored_amount(client.get("hedge_price"))
+        work_text = " ".join(
+            str(cell).strip() for cell in (r.get("cells") or [])[1:] if str(cell).strip()
         )
-        written += 1
-    return {"written": written, "month": month}
+        jobs = [mark for mark in parse_work_marks(work_text) if mark["kind"] != "note"]
+        clients += 1
+        for mark in jobs:
+            kind = mark["kind"]
+            if kind == "mow":
+                desc = f"Mowing {mark['day']}"
+                amount = 0.0 if mow is None else mow
+                day = str(mark["day"])
+            elif kind == "hedge":
+                desc = f"Hedging {mark['day']}"
+                amount = 0.0 if hedge is None else hedge
+                day = f"{mark['day']}h"
+            else:
+                desc = str(mark["name"])
+                amount = float(mark["amount"])
+                day = None
+            db.add_work_item(
+                conn,
+                client_id=cid,
+                month=month,
+                day_or_note=day,
+                description=desc[:500],
+                amount=amount,
+                source_job_id=source_job_id,
+            )
+            lines += 1
+    return {"written": clients, "lines": lines, "month": month}

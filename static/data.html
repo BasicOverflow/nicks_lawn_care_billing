@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Data — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=9"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=14"/>
 </head>
 <body>
 <header class="top">
@@ -25,19 +25,31 @@
 </header>
 <main>
   <h1>Data</h1>
-    <p class="hint">Add multiple photos (files or camera), then Upload &amp; OCR. You can stage and submit more batches while OCR is still running — they queue automatically.</p>
+  <p class="hint">Type mowing prices, hedge prices, and contact details. Photograph only the work-completed sheets.</p>
+
+  <section class="card" id="rosterCard">
+    <h2>Clients</h2>
+    <p class="hint">Mowing prices, hedge prices, and contact details. Open the list when you want to edit it.</p>
+    <button type="button" id="btnToggleClients" class="secondary">Edit clients</button>
+    <div id="clientPanel" hidden>
+      <p class="hint">A blank price clears that price. Save writes every row, including ones hidden by the search.</p>
+      <label for="clientFilter">Find a client</label>
+      <input id="clientFilter" type="search" placeholder="Name or address"/>
+      <div id="clientWrap" class="table-scroll"></div>
+      <div class="row-actions">
+        <button type="button" id="btnAddClient">Add client</button>
+        <button type="button" id="btnSaveClients">Save clients</button>
+      </div>
+      <p class="msg" id="clientMsg"></p>
+    </div>
+  </section>
 
   <section class="card">
-    <h2>Upload</h2>
-    <label>Billing month (YYYY-MM)</label>
+    <h2>Work completed</h2>
+    <p class="hint">Add photos of the work-completed sheet, then Upload &amp; OCR. You can stage another batch while one is still running.</p>
+    <label for="month">Billing month</label>
     <input id="month" type="month" required/>
-    <label>Sheet kind</label>
-    <select id="sheetKind">
-      <option value="mowing">Mowing / roster</option>
-      <option value="hedges">Hedges price list</option>
-      <option value="work">Work completed (dates)</option>
-      <option value="other">Other</option>
-    </select>
+    <p class="hint" id="monthSuggest"></p>
     <label>Photos</label>
     <div class="row-actions">
       <button type="button" id="btnPickFiles" class="secondary">Choose from device</button>
@@ -58,22 +70,11 @@
 
   <section class="card" id="reviewSection" hidden>
     <h2>Review</h2>
-    <p class="hint">Fix the table with a short correction if needed, then send everything into the datastore.</p>
+    <p class="hint">Each day is its own box, side by side. A plain number is a mow. A number with h is a hedge. An odd job sits in one box with the name and the price written on the sheet.</p>
     <div id="tableWrap"></div>
-
-    <div id="conflictsPanel" class="conflicts" hidden>
-      <h3>Conflicts with existing data</h3>
-      <p class="hint">These names already exist with different values. Describe how to resolve them in plain English before sending.</p>
-      <div id="conflictsList"></div>
-      <label>How should we resolve these?</label>
-      <textarea id="conflictNl" placeholder="e.g. Keep the sheet prices for MOSHER, but keep Kevin's address from the datastore"></textarea>
-    </div>
-
-    <label>Correction (optional)</label>
-    <textarea id="correction" placeholder="e.g. Fix MOSHER price to $80"></textarea>
     <div class="row-actions">
-      <button type="button" id="btnCorrect" class="secondary">Apply correction</button>
       <button type="button" id="btnCommit">Send to datastore</button>
+      <button type="button" id="btnClearReview" class="secondary">Clear review</button>
     </div>
     <pre class="msg" id="reviewMsg"></pre>
   </section>
@@ -109,11 +110,10 @@
     <p class="msg chat-status" id="chatMsg"></p>
   </section>
 </main>
-<script src="/static/js/app.js?v=7"></script>
+<script src="/static/js/app.js?v=11"></script>
 <script>
 let currentJob = null;
 let currentExtract = null;
-let currentConflicts = [];
 let chatHistory = [];
 /** @type {{file: File, url: string}[]} */
 let stagedPhotos = [];
@@ -170,59 +170,338 @@ el("btnClearPhotos").onclick = () => {
   renderPhotoPreview();
 };
 
-function showReview(extract, conflicts) {
-  currentExtract = extract;
-  currentConflicts = conflicts || [];
+let reviewStamp = null;
+let reviewDirty = false;
+let reviewSaving = false;
+let reviewTimer = null;
+
+function showReview(extract, scroll) {
+  currentExtract = extract || { tables: [] };
   const sec = el("reviewSection");
+  const reveal = scroll || sec.hidden;
   sec.hidden = false;
-  renderTable(extract);
-  renderConflicts(currentConflicts);
-  sec.scrollIntoView({ behavior: "smooth", block: "start" });
+  el("btnCommit").hidden = false;
+  el("btnClearReview").hidden = false;
+  renderTable(currentExtract);
+  if (reveal) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function markReviewDirty() {
+  if (!currentJob) return;
+  reviewDirty = true;
+  clearTimeout(reviewTimer);
+  reviewTimer = setTimeout(saveReviewDraft, 700);
+}
+
+async function saveReviewDraft() {
+  if (!currentJob || reviewSaving) return;
+  reviewSaving = true;
+  const extract = collectExtract();
+  try {
+    const r = await api("/api/jobs/" + currentJob + "/draft", {
+      method: "PUT",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        extract,
+        month: el("month").value,
+        sheet_kind: "work",
+      }),
+    });
+    reviewDirty = false;
+    reviewStamp = r.updated_at || reviewStamp;
+  } catch (_) {
+  } finally {
+    reviewSaving = false;
+  }
+}
+
+function editingReview() {
+  const node = document.activeElement;
+  return !!(node && node.closest && node.closest("#tableWrap"));
+}
+
+function applySharedReview(r) {
+  if (!r || !r.job_id || !r.extract) {
+    if (!r || !r.job_id) {
+      if (currentJob && !reviewDirty && !editingReview() && el("reviewSection") && !el("reviewSection").hidden) {
+        const cleared = r && r.closed_status === "cleared";
+        dismissReview(cleared
+          ? "Review cleared. Nothing was saved."
+          : "This sheet was already sent to the datastore.");
+      }
+    }
+    return;
+  }
+  if (r.job_id === currentJob && r.updated_at === reviewStamp) return;
+  if (window._ocrRunning && r.job_id !== currentJob) return;
+  if (reviewDirty || reviewSaving || editingReview()) return;
+  const reveal = !currentJob || r.job_id !== currentJob || el("reviewSection").hidden;
+  currentJob = r.job_id;
+  reviewStamp = r.updated_at;
+  if (r.month && /^\d{4}-\d{2}$/.test(r.month) && !el("month").value) el("month").value = r.month;
+  refreshMonthSuggest();
+  showReview(r.extract, reveal);
+}
+
+function cellInput(value) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "cell";
+  input.value = value == null ? "" : String(value);
+  return input;
+}
+
+function isDayBox(value) {
+  return /^(?:[1-9]|[12]\d|3[01])h?$/i.test(String(value || "").trim());
+}
+
+function moneyLabel(amount) {
+  const num = Number(amount);
+  if (!Number.isFinite(num)) return `$${amount}`;
+  return Number.isInteger(num) ? `$${num}` : `$${num.toFixed(2)}`;
+}
+
+function dayPieces(chunk) {
+  const out = [];
+  const note = [];
+  const flush = () => {
+    const text = note.join(" ").replace(/^[\s;,|]+|[\s;,|]+$/g, "");
+    if (text) out.push(text);
+    note.length = 0;
+  };
+  String(chunk || "").split(/\s+/).forEach(tok => {
+    const clean = tok.replace(/^[,;|]+|[,;|]+$/g, "");
+    if (!clean) return;
+    if (/^h$/i.test(clean) && !note.length && out.length && isDayBox(out[out.length - 1]) && !/h$/i.test(out[out.length - 1])) {
+      out[out.length - 1] = out[out.length - 1] + "h";
+      return;
+    }
+    if (isDayBox(clean)) {
+      flush();
+      out.push(clean.replace(/H$/, "h"));
+    } else {
+      note.push(clean);
+    }
+  });
+  flush();
+  return out;
+}
+
+function splitMarks(text) {
+  const src = String(text || "").trim();
+  if (!src) return [];
+  const jobRe = /([A-Za-z][^$|]{0,80}?)\s*\$\s*(\d+(?:\.\d{1,2})?)/g;
+  const hits = [];
+  let match;
+  while ((match = jobRe.exec(src))) {
+    const name = match[1].replace(/\s+/g, " ").replace(/^[\s;,|]+|[\s;,|]+$/g, "");
+    if (!name) continue;
+    hits.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      label: `${name} ${moneyLabel(match[2])}`,
+    });
+  }
+  const boxes = [];
+  let cursor = 0;
+  hits.forEach(hit => {
+    boxes.push(...dayPieces(src.slice(cursor, hit.start)));
+    boxes.push(hit.label);
+    cursor = hit.end;
+  });
+  boxes.push(...dayPieces(src.slice(cursor)));
+  return boxes;
+}
+
+function joinMarks(labels) {
+  const parts = [];
+  const days = [];
+  const flush = () => {
+    if (days.length) {
+      parts.push(days.join(" "));
+      days.length = 0;
+    }
+  };
+  labels.forEach(raw => {
+    const value = String(raw || "").trim();
+    if (!value) return;
+    if (isDayBox(value)) days.push(value.replace(/H$/, "h"));
+    else {
+      flush();
+      parts.push(value);
+    }
+  });
+  flush();
+  return parts.join(" | ");
+}
+
+function workColumnIndex(columns) {
+  const found = columns.findIndex(col => /date|work|day/i.test(String(col || "")));
+  if (found >= 0) return found;
+  return columns.length > 1 ? 1 : -1;
+}
+
+function markInput(value) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "mark" + (isDayBox(value) || !String(value || "").trim() ? "" : " wide");
+  input.value = value == null ? "" : String(value);
+  input.addEventListener("input", () => {
+    const empty = !input.value.trim();
+    input.classList.toggle("wide", !empty && !isDayBox(input.value));
+  });
+  return input;
+}
+
+function appendMark(row, plus, value) {
+  const wrap = document.createElement("span");
+  wrap.className = "mark-wrap";
+  wrap.appendChild(markInput(value));
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "mark-x";
+  remove.textContent = "×";
+  remove.title = "Remove this box";
+  remove.onclick = () => {
+    const boxes = row.querySelectorAll(".mark-wrap");
+    if (boxes.length <= 1) {
+      const input = wrap.querySelector("input.mark");
+      input.value = "";
+      input.classList.remove("wide");
+      return;
+    }
+    wrap.remove();
+    markReviewDirty();
+  };
+  wrap.appendChild(remove);
+  row.insertBefore(wrap, plus);
+}
+
+function marksCell(value) {
+  const td = document.createElement("td");
+  td.className = "marks";
+  const row = document.createElement("div");
+  row.className = "mark-row";
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.className = "mark-add";
+  plus.textContent = "+";
+  plus.title = "Add a day or job";
+  plus.onclick = () => {
+    appendMark(row, plus, "");
+    const added = row.querySelectorAll("input.mark");
+    added[added.length - 1].focus();
+    markReviewDirty();
+  };
+  row.appendChild(plus);
+  const labels = splitMarks(value);
+  (labels.length ? labels : [""]).forEach(label => appendMark(row, plus, label));
+  td.appendChild(row);
+  return td;
+}
+
+function addEditableRow(tbody, values, columns) {
+  const tr = document.createElement("tr");
+  const cells = values && values.length ? values.slice() : [];
+  const workAt = workColumnIndex(columns);
+  while (cells.length < columns.length) cells.push("");
+  columns.forEach((col, i) => {
+    if (i === workAt) tr.appendChild(marksCell(cells[i] || ""));
+    else {
+      const td = document.createElement("td");
+      td.appendChild(cellInput(cells[i] || ""));
+      tr.appendChild(td);
+    }
+  });
+  const tools = document.createElement("td");
+  tools.className = "row-tools";
+  const rm = document.createElement("button");
+  rm.type = "button";
+  rm.className = "linkish";
+  rm.textContent = "Remove";
+  rm.onclick = () => {
+    if (tbody.children.length <= 1) {
+      tr.querySelectorAll("input.cell, input.mark").forEach(inp => {
+        inp.value = "";
+        inp.classList.remove("wide");
+      });
+      return;
+    }
+    tr.remove();
+  };
+  tools.appendChild(rm);
+  tr.appendChild(tools);
+  tbody.appendChild(tr);
 }
 
 function renderTable(extract) {
   const wrap = el("tableWrap");
+  wrap.innerHTML = "";
   const tables = (extract && extract.tables) || [];
   if (!tables.length) {
     wrap.innerHTML = "<p class='hint'>No tables in extract. Notes: " +
       escapeHtml(((extract && extract.notes) || []).slice(0, 3).join(" | ")) + "</p>";
     return;
   }
-  let html = "";
   tables.forEach((t, ti) => {
-    const cols = t.columns || [];
-    html += `<h3 class="table-title">Table ${ti + 1}</h3><table><thead><tr>`;
-    cols.forEach(c => { html += `<th>${escapeHtml(c)}</th>`; });
-    html += "</tr></thead><tbody>";
-    (t.rows || []).forEach(row => {
-      html += "<tr>";
-      (row || []).forEach(cell => { html += `<td>${escapeHtml(cell)}</td>`; });
-      html += "</tr>";
+    const cols = (t.columns && t.columns.length) ? t.columns.slice() : ["CLIENT", "DATE & WORK COMPLETED"];
+    const block = document.createElement("div");
+    block.className = "review-table";
+    const title = document.createElement("h3");
+    title.className = "table-title";
+    title.textContent = tables.length > 1 ? `Table ${ti + 1}` : "Sheet";
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const hr = document.createElement("tr");
+    cols.forEach(c => {
+      const th = document.createElement("th");
+      th.appendChild(cellInput(c));
+      hr.appendChild(th);
     });
-    html += "</tbody></table>";
+    const corner = document.createElement("th");
+    hr.appendChild(corner);
+    thead.appendChild(hr);
+    const tbody = document.createElement("tbody");
+    const rows = t.rows && t.rows.length ? t.rows : [[]];
+    rows.forEach(row => addEditableRow(tbody, row, cols));
+    table.append(thead, tbody);
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "secondary";
+    add.textContent = "Add row";
+    add.onclick = () => addEditableRow(
+      tbody,
+      [],
+      [...hr.querySelectorAll("input.cell")].map(inp => inp.value),
+    );
+    actions.appendChild(add);
+    block.append(title, table, actions);
+    wrap.appendChild(block);
   });
-  wrap.innerHTML = html;
 }
 
-function renderConflicts(conflicts) {
-  const panel = el("conflictsPanel");
-  const list = el("conflictsList");
-  if (!conflicts || !conflicts.length) {
-    panel.hidden = true;
-    list.innerHTML = "";
-    el("conflictNl").value = "";
-    return;
-  }
-  panel.hidden = false;
-  let html = "<ul class='conflict-ul'>";
-  conflicts.forEach(c => {
-    const issues = (c.issues || []).map(i =>
-      `<li><strong>${escapeHtml(i.field)}</strong>: knowledge <code>${escapeHtml(i.knowledge)}</code> → sheet <code>${escapeHtml(i.incoming)}</code></li>`
-    ).join("");
-    html += `<li class="conflict-item"><strong>${escapeHtml(c.name)}</strong><ul>${issues}</ul></li>`;
+function collectExtract() {
+  const tables = [];
+  document.querySelectorAll("#tableWrap .review-table").forEach(block => {
+    const columns = [...block.querySelectorAll("thead input.cell")].map(inp => inp.value);
+    const rows = [...block.querySelectorAll("tbody tr")].map(tr => {
+      const cells = [...tr.children]
+        .filter(td => !td.classList.contains("row-tools"))
+        .map(td => {
+          const marks = td.querySelector(".mark-row");
+          if (marks) return joinMarks([...marks.querySelectorAll("input.mark")].map(inp => inp.value));
+          const input = td.querySelector("input.cell");
+          return input ? input.value : "";
+        });
+      return cells;
+    }).filter(row => row.some(c => String(c).trim()));
+    tables.push({ caption: null, columns, rows });
   });
-  html += "</ul>";
-  list.innerHTML = html;
+  const base = currentExtract && typeof currentExtract === "object" ? currentExtract : {};
+  currentExtract = Object.assign({}, base, { tables });
+  return currentExtract;
 }
 
 function appendChat(role, text, { thinking } = {}) {
@@ -288,7 +567,7 @@ el("btnUpload").onclick = async () => {
   const batch = stagedPhotos.slice();
   const fd = new FormData();
   fd.append("month", month);
-  fd.append("sheet_kind", el("sheetKind").value);
+  fd.append("sheet_kind", "work");
   batch.forEach(p => fd.append("files", p.file, p.file.name));
   el("uploadMsg").textContent = `Submitting ${batch.length} photo${batch.length === 1 ? "" : "s"}…`;
   el("uploadMsg").className = "msg";
@@ -365,7 +644,7 @@ window.onJobDone = (p) => {
     currentJob = p.detail.job_id || currentJob;
     // Keep month in sync with completed batch for review/commit
     if (p.detail.month) el("month").value = p.detail.month;
-    showReview(p.detail.extract, p.detail.conflicts || []);
+    showReview(p.detail.extract, true);
     const qnote = depth > 0 ? ` (${depth} more in queue)` : "";
     el("uploadMsg").textContent = `OCR done — review below.${qnote}`;
     el("uploadMsg").className = "msg ok";
@@ -425,18 +704,26 @@ function updateQueueMsg(p) {
 }
 window.updateQueueMsg = updateQueueMsg;
 
-el("btnCorrect").onclick = async () => {
+function dismissReview(message) {
+  el("tableWrap").innerHTML = "";
+  el("btnCommit").hidden = true;
+  el("btnClearReview").hidden = true;
+  el("reviewSection").hidden = false;
+  el("reviewMsg").textContent = message;
+  el("reviewMsg").className = "msg ok";
+  currentJob = null;
+  currentExtract = null;
+  reviewStamp = null;
+  reviewDirty = false;
+}
+
+el("btnClearReview").onclick = async () => {
   if (!currentJob) return;
-  const instruction = el("correction").value.trim();
-  if (!instruction) return;
+  if (!window.confirm("Clear this review? The tables will be dropped and nothing will be saved.")) return;
+  const job = currentJob;
   try {
-    await api("/api/jobs/" + currentJob + "/correct", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ instruction, month: el("month").value }),
-    });
-    el("reviewMsg").textContent = "Correction running…";
-    el("reviewMsg").className = "msg";
+    await api("/api/jobs/" + job + "/clear", { method: "POST" });
+    dismissReview("Review cleared. Nothing was saved.");
   } catch (e) {
     el("reviewMsg").textContent = e.message;
     el("reviewMsg").className = "msg err";
@@ -446,10 +733,9 @@ el("btnCorrect").onclick = async () => {
 el("btnCommit").onclick = async () => {
   if (!currentJob) return;
   const month = el("month").value;
-  if (currentConflicts.length && !el("conflictNl").value.trim()) {
-    el("reviewMsg").textContent = "Conflicts found — describe how to resolve them, then send.";
+  if (!month) {
+    el("reviewMsg").textContent = "Pick a billing month first.";
     el("reviewMsg").className = "msg err";
-    el("conflictNl").focus();
     return;
   }
   try {
@@ -458,14 +744,11 @@ el("btnCommit").onclick = async () => {
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({
         month,
-        sheet_kind: el("sheetKind").value,
-        conflict_nl: el("conflictNl").value,
+        sheet_kind: "work",
+        extract: collectExtract(),
       }),
     });
-    el("reviewMsg").textContent =
-      `Saved ${r.written} rows for ${r.month}` +
-      (r.conflicts_resolved ? ` (${r.conflicts_resolved} conflicts resolved).` : ".") +
-      " Go to Billing →";
+    el("reviewMsg").textContent = `Saved ${r.lines != null ? r.lines : r.written} bill lines for ${r.month}. Go to Billing →`;
     el("reviewMsg").className = "msg ok";
   } catch (e) {
     el("reviewMsg").textContent = e.message;
@@ -524,9 +807,220 @@ document.querySelectorAll("[data-suggest]").forEach(btn => {
   };
 });
 
-const now = new Date();
-el("month").value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+function clientField(name, value, type) {
+  const input = document.createElement("input");
+  input.className = "cell";
+  input.dataset.field = name;
+  input.type = type;
+  if (type === "number") {
+    input.step = "0.01";
+    input.inputMode = "decimal";
+  }
+  input.value = value == null ? "" : String(value);
+  return input;
+}
+
+function addClientRow(client) {
+  const c = client || {};
+  const tr = document.createElement("tr");
+  if (c.id) tr.dataset.id = String(c.id);
+  const fields = [
+    ["name", c.name || "", "text"],
+    ["address", c.address || "", "text"],
+    ["mow_price", c.mow_price ?? "", "number"],
+    ["hedge_price", c.hedge_price ?? "", "number"],
+    ["phone", c.phone || "", "text"],
+    ["email", c.email || "", "text"],
+    ["notes", c.billing_notes || "", "text"],
+  ];
+  fields.forEach(([name, value, type]) => {
+    const td = document.createElement("td");
+    td.appendChild(clientField(name, value, type));
+    tr.appendChild(td);
+  });
+  const mail = document.createElement("td");
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.dataset.field = "prefer_mail";
+  box.checked = !!c.prefer_mail;
+  mail.appendChild(box);
+  tr.appendChild(mail);
+  const tools = document.createElement("td");
+  tools.className = "row-tools";
+  if (!c.id) {
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "linkish";
+    rm.textContent = "Remove";
+    rm.onclick = () => tr.remove();
+    tools.appendChild(rm);
+  }
+  tr.appendChild(tools);
+  el("clientBody").appendChild(tr);
+}
+
+function renderClients(clients) {
+  const wrap = el("clientWrap");
+  wrap.innerHTML = "";
+  const table = document.createElement("table");
+  table.innerHTML = `<thead><tr>
+    <th>Name</th><th>Address</th><th>Mow</th><th>Hedge</th>
+    <th>Phone</th><th>Email</th><th>Notes</th><th>Mail</th><th></th>
+  </tr></thead>`;
+  const body = document.createElement("tbody");
+  body.id = "clientBody";
+  table.appendChild(body);
+  wrap.appendChild(table);
+  (clients || []).forEach(addClientRow);
+  filterClients();
+}
+
+function filterClients() {
+  const q = (el("clientFilter").value || "").trim().toLowerCase();
+  document.querySelectorAll("#clientBody tr").forEach(tr => {
+    const name = tr.querySelector('[data-field="name"]');
+    const address = tr.querySelector('[data-field="address"]');
+    const blob = `${name ? name.value : ""} ${address ? address.value : ""}`.toLowerCase();
+    tr.hidden = !!(q && !blob.includes(q));
+  });
+}
+
+function collectClients() {
+  return [...document.querySelectorAll("#clientBody tr")].map(tr => {
+    const val = field => {
+      const node = tr.querySelector(`[data-field="${field}"]`);
+      return node ? node.value : "";
+    };
+    const price = field => {
+      const raw = val(field).trim();
+      if (!raw) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    };
+    const mail = tr.querySelector('[data-field="prefer_mail"]');
+    return {
+      id: tr.dataset.id ? Number(tr.dataset.id) : null,
+      name: val("name").trim(),
+      address: val("address"),
+      mow_price: price("mow_price"),
+      hedge_price: price("hedge_price"),
+      phone: val("phone"),
+      email: val("email"),
+      billing_notes: val("notes"),
+      prefer_mail: !!(mail && mail.checked),
+    };
+  }).filter(row => row.name);
+}
+
+async function loadClients() {
+  try {
+    const r = await api("/api/clients");
+    renderClients(r.clients || []);
+  } catch (e) {
+    el("clientMsg").textContent = e.message;
+    el("clientMsg").className = "msg err";
+  }
+}
+
+let clientsLoaded = false;
+let clientsOpen = false;
+
+function setClientsOpen(open) {
+  clientsOpen = open;
+  el("clientPanel").hidden = !open;
+  el("btnToggleClients").textContent = open ? "Hide clients" : "Edit clients";
+  if (open && !clientsLoaded) {
+    clientsLoaded = true;
+    loadClients();
+  }
+}
+
+el("btnToggleClients").onclick = () => setClientsOpen(!clientsOpen);
+el("clientFilter").addEventListener("input", filterClients);
+el("btnAddClient").onclick = () => {
+  addClientRow({});
+  const rows = document.querySelectorAll("#clientBody tr");
+  const last = rows[rows.length - 1];
+  if (last) {
+    last.hidden = false;
+    const name = last.querySelector('[data-field="name"]');
+    if (name) name.focus();
+  }
+};
+el("btnSaveClients").onclick = async () => {
+  el("btnSaveClients").disabled = true;
+  el("clientMsg").textContent = "Saving…";
+  el("clientMsg").className = "msg";
+  try {
+    const r = await api("/api/clients", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({clients: collectClients()}),
+    });
+    renderClients(r.clients || []);
+    el("clientMsg").textContent = `Saved ${r.saved} client${r.saved === 1 ? "" : "s"}.`;
+    el("clientMsg").className = "msg ok";
+  } catch (e) {
+    el("clientMsg").textContent = e.message;
+    el("clientMsg").className = "msg err";
+  } finally {
+    el("btnSaveClients").disabled = false;
+  }
+};
+
+function currentBillingMonth() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthLabel(ym) {
+  const [year, month] = ym.split("-").map(Number);
+  return new Date(year, month - 1, 1).toLocaleString(undefined, {month: "long", year: "numeric"});
+}
+
+function refreshMonthSuggest() {
+  const current = currentBillingMonth();
+  const chosen = el("month").value;
+  const box = el("monthSuggest");
+  if (!chosen) el("month").value = current;
+  const showing = el("month").value;
+  if (showing === current) {
+    box.textContent = `Suggested month: ${monthLabel(current)}.`;
+    return;
+  }
+  box.innerHTML = "";
+  box.append(`Suggested month: ${monthLabel(current)}. `);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "linkish";
+  btn.textContent = `Use ${monthLabel(current)}`;
+  btn.onclick = () => {
+    el("month").value = current;
+    el("month").dispatchEvent(new Event("change"));
+    refreshMonthSuggest();
+  };
+  box.append(btn);
+}
+
+el("month").addEventListener("change", refreshMonthSuggest);
+el("month").value = currentBillingMonth();
+refreshMonthSuggest();
 renderPhotoPreview();
+
+el("tableWrap").addEventListener("input", markReviewDirty);
+el("tableWrap").addEventListener("click", (e) => {
+  if (e.target.closest("button")) markReviewDirty();
+});
+el("month").addEventListener("change", markReviewDirty);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && reviewDirty) saveReviewDraft();
+});
+
+function pullSharedReview() {
+  api("/api/review/open").then(applySharedReview).catch(() => {});
+}
+pullSharedReview();
+setInterval(pullSharedReview, 2500);
 </script>
 </body>
 </html>

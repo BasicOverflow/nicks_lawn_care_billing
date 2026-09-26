@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -22,8 +22,9 @@ app = FastAPI(
     title="Nick's Lawn Care Billing",
     version="1.0.0",
     description=(
-        "Upload lawn-care sheet photos, review the OCR table, and store clients "
-        "and monthly work. Generate PDF bills, a tax spreadsheet, and optional email.\n\n"
+        "Photograph work-completed sheets, review the OCR table, and store that "
+        "month's work. Type client names, mowing prices, and hedge prices by hand. "
+        "Generate PDF bills, a tax spreadsheet, and optional email.\n\n"
         "The vision model is **Qwen2.5-VL-3B-Instruct**, served on ray-hive as "
         "`qwen25-vl-3b`. Load it with `POST /api/model/load` before OCR or chat. "
         "Long work returns a `job_id`; poll `GET /api/progress` until `status` is "
@@ -32,12 +33,27 @@ app = FastAPI(
     openapi_tags=[
         {"name": "status", "description": "Live progress for OCR, chat, billing, email, and model jobs."},
         {"name": "model", "description": "Load and unload the Qwen vision model on ray-hive."},
-        {"name": "uploads", "description": "Photo batches, the OCR queue, and plain-language corrections."},
+        {"name": "uploads", "description": "Photo batches, the OCR queue, and saving a reviewed table."},
         {"name": "knowledge", "description": "Clients, months, and the data chat."},
         {"name": "billing", "description": "PDF bills, edits, downloads, tax export, and email."},
     ],
 )
 app.include_router(router)
+
+
+@app.middleware("http")
+async def full_page_bodies(request: Request, call_next):
+    """Ignore Range on HTML and static files.
+
+    After a dropped connection the browser retries the document with a byte
+    range. FileResponse answers 206, and a slice of the page never renders.
+    """
+    path = request.url.path
+    if path in {"/", "/data", "/billing"} or path.startswith("/static/"):
+        request.scope["headers"] = [
+            (key, value) for key, value in request.scope["headers"] if key.lower() != b"range"
+        ]
+    return await call_next(request)
 
 
 @app.on_event("startup")

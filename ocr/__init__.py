@@ -36,7 +36,7 @@ def _ensure_env() -> None:
     load_dotenv(root / ".env")
 
 
-def _load_knowledge_records(sheet_kind: str = "mowing") -> list[dict]:
+def _load_knowledge_records(sheet_kind: str = "work") -> list[dict]:
     """Pull guiding client rows from Postgres (live knowledge, not gold)."""
     try:
         from app import db
@@ -52,7 +52,7 @@ def extract_sheet(
     image_path: Path | str,
     *,
     max_passes: int = 4,
-    sheet_kind: str = "mowing",
+    sheet_kind: str = "work",
     knowledge_names: list[str] | None = None,
     knowledge_records: list[dict] | None = None,
     chunk_size: int | None = None,
@@ -195,9 +195,9 @@ def model_status() -> dict:
     _ensure_env()
     import urllib.request
 
-    from ray_hive.core.ray_utils import serve_base_url
+    from .chat import serve_base
 
-    base = serve_base_url()
+    base = serve_base()
     up = False
     try:
         with urllib.request.urlopen(f"{base}/{MODEL_ID}/v1/models", timeout=5) as r:

@@ -78,6 +78,8 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     idx = json.loads((ROOT / "ground_truth" / "index.json").read_text(encoding="utf-8"))
     for fx in idx["fixtures"]:
+        if "work" not in str(fx.get("kind") or "").lower():
+            continue
         im = ImageOps.exif_transpose(Image.open(fx["image"])).convert("RGB")
         best = None
         for rot in (0, -90, 90, 180):

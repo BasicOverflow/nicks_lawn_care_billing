@@ -83,19 +83,21 @@ Put secrets on the Proxmox host first (not in git):
 # /root/nicks-billing.env  — copy from .env.example and fill S3 / SMTP
 ```
 
-Until this repo is on Gitea, copy the tree to the host and install from it:
+Redeploy replaces the whole app in CT 118 and restarts the service. It does not copy files one by one. Re-running skips `pct create`.
+
+From a tree already on the Proxmox host:
 
 ```bash
-SRC_DIR=/root/nini_billing_scratch bash /root/nini_billing_scratch/deploy/install.sh
+SRC_DIR=/root/nicks-billing-src bash /root/nicks-billing-src/deploy/install.sh
 ```
 
-After Gitea has mirrored [BasicOverflow/nicks_lawn_care_billing](https://github.com/BasicOverflow/nicks_lawn_care_billing) (hourly):
+From the Gitea mirror of [BasicOverflow/nicks_lawn_care_billing](https://github.com/BasicOverflow/nicks_lawn_care_billing):
 
 ```bash
 bash -c "$(curl -fsSL http://10.0.0.52:3000/admin/nicks_lawn_care_billing/raw/branch/main/deploy/install.sh)"
 ```
 
-Re-running skips `pct create` and re-bootstraps. OCR still uses ray-hive on the cluster; the CT only submits jobs. It clones `ray-hive` to `/opt/ray-hive` as that working directory and does not install vLLM.
+The guest keeps `/etc/nicks-billing.env`. Sheet photos, gold labels, and `.env` are not copied in. OCR still uses ray-hive on the cluster; the CT only submits jobs. It clones `ray-hive` to `/opt/ray-hive` as that working directory and does not install vLLM.
 
 ```bash
 pct exec 118 -- systemctl status nicks-billing
@@ -116,10 +118,13 @@ App env: `SMTP_HOST`, `SMTP_PORT=587`, `SMTP_USER` / `SMTP_PASSWORD`, `SMTP_FROM
 
 ## OCR package
 
-Knowledge-guided parallel OCR: the full photo is sent many times in parallel;
-each request asks the model for only a small chunk of Postgres-known clients
-(default 4 names per request). A follow-up pass then uses that extract to
-fill missing names and blank price or date cells. No tile/crop splitting.
+Photos are work-completed sheets only. Mowing prices, hedge prices, and contact
+details are typed on the Data page. Knowledge-guided OCR sends the full photo
+many times in parallel; each request asks the model for a small chunk of
+Postgres-known clients (default 4 names per request). A follow-up pass fills
+missing names and blank date cells. No tile/crop splitting.
+
+The OCR benches score `ground_truth/work_completed/` only.
 
 Seed the knowledge base from Nick’s office files (spreadsheet, hedges list, phones,
 mailing labels). Gold JSON under `ground_truth/` is for scoring tests only and
@@ -132,7 +137,7 @@ py -3 scripts\import_tmp_knowledge.py
 ```python
 import ocr
 ocr.load_model()
-sheet = ocr.extract_sheet("photo.jpg", sheet_kind="mowing")
+sheet = ocr.extract_sheet("photo.jpg", sheet_kind="work")
 fixed = ocr.apply_correction("photo.jpg", sheet, "Fix MOSHER price to $80")
 ocr.unload_model()
 ```

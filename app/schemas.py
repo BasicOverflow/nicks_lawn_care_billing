@@ -21,17 +21,12 @@ class UploadCancel(BaseModel):
     )
 
 
-class CorrectJob(BaseModel):
-    """Plain-language fix applied to one OCR result."""
+class ReviewDraft(BaseModel):
+    """In-progress table edits shared between devices."""
 
-    instruction: str = Field(
-        ...,
-        description="What to change, in everyday language. Example: set the hedge price for SMITH to 80.",
-    )
-    month: str | None = Field(
-        None,
-        description="Billing month YYYY-MM. Used when checking the corrected rows for conflicts.",
-    )
+    extract: dict = Field(..., description="Tables as they stand on the review screen.")
+    month: str | None = Field(None, description="Billing month, YYYY-MM.")
+    sheet_kind: str | None = Field(None, description="Always work. Photo review is a work-completed log.")
 
 
 class CommitJob(BaseModel):
@@ -39,13 +34,33 @@ class CommitJob(BaseModel):
 
     month: str = Field(..., description="Billing month, YYYY-MM.")
     sheet_kind: str = Field(
-        "mowing",
-        description="Which price column the sheet is: mowing or hedges.",
+        "work",
+        description="Ignored. A committed photo is always a work-completed log.",
     )
-    conflict_nl: str = Field(
-        "",
-        description="How to resolve clashes with data already stored. Required when conflicts exist.",
+    extract: dict | None = Field(
+        None,
+        description="Tables as edited on the review screen. Replaces the OCR JSON before it is stored.",
     )
+
+
+class TypedClient(BaseModel):
+    """One hand-entered client. Mowing and hedge prices live here, not on a photo."""
+
+    id: int | None = Field(None, description="Existing client id. Omit to add someone new.")
+    name: str = Field(..., description="Client name as it should be stored.")
+    address: str = Field("", description="Service address.")
+    phone: str = Field("", description="Phone.")
+    email: str = Field("", description="Email. Blank means bills are not emailed.")
+    billing_notes: str = Field("", description="Mailing notes or other contact notes.")
+    mow_price: float | None = Field(None, description="Mowing price in dollars. Blank clears it.")
+    hedge_price: float | None = Field(None, description="Hedge price in dollars. Blank clears it.")
+    prefer_mail: bool = Field(False, description="Send a paper bill instead of email.")
+
+
+class ClientRoster(BaseModel):
+    """The typed client list: names, contact, mowing prices, and hedge prices."""
+
+    clients: list[TypedClient] = Field(default_factory=list)
 
 
 class ChatTurn(BaseModel):
@@ -105,7 +120,7 @@ class QueuedUpload(BaseModel):
 
     job_id: str = Field(..., description="Upload id. Cancel this id to drop it before it starts.")
     month: str = Field("", description="Billing month YYYY-MM.")
-    sheet_kind: str = Field("", description="mowing, hedges, or work.")
+    sheet_kind: str = Field("work", description="Photo batches are work completed.")
     n_files: int = Field(0, description="How many photos are in the batch.")
     status: str = Field("", description="queued until the worker picks it up.")
 

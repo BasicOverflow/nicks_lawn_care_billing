@@ -226,5 +226,6 @@ ocr_bench/
 bench_results/
 ground_truth/
 scripts/update_new_sheet_gold.py
+scripts/load_roster_sheets.py
 .DS_Store
 Thumbs.db
