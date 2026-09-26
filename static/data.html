@@ -60,8 +60,6 @@
     <div id="photoPreview" class="photo-preview"></div>
     <div class="row-actions">
       <button type="button" id="btnUpload">Upload &amp; OCR</button>
-      <button type="button" id="btnCancelOcr" class="secondary" hidden>Cancel current OCR</button>
-      <button type="button" id="btnCancelAllOcr" class="secondary" hidden>Cancel all</button>
       <button type="button" id="btnClearPhotos" class="secondary">Clear photos</button>
     </div>
     <p class="msg" id="uploadMsg"></p>
@@ -387,7 +385,6 @@ function marksCell(value) {
   const plus = document.createElement("button");
   plus.type = "button";
   plus.className = "mark-add";
-  plus.tabIndex = -1;
   plus.textContent = "+";
   plus.title = "Add a day or job";
   plus.onclick = () => {
@@ -580,12 +577,9 @@ el("btnUpload").onclick = async () => {
   try {
     const r = await api("/api/upload", { method: "POST", body: fd });
     currentJob = r.job_id;
-    // Clear staged so more can be added for the next batch while OCR runs
     batch.forEach(p => URL.revokeObjectURL(p.url));
     stagedPhotos = stagedPhotos.filter(p => !batch.includes(p));
     renderPhotoPreview();
-    el("btnCancelOcr").hidden = false;
-    el("btnCancelAllOcr").hidden = false;
     if (r.state === "queued") {
       el("uploadMsg").textContent =
         `Queued job ${r.job_id} (${r.n_files} photos). ${r.queue_depth} waiting ahead/behind.`;
@@ -601,50 +595,8 @@ el("btnUpload").onclick = async () => {
   }
 };
 
-el("btnCancelOcr").onclick = async () => {
-  el("btnCancelOcr").disabled = true;
-  el("uploadMsg").textContent = "Cancelling current OCR…";
-  try {
-    await api("/api/upload/cancel", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ job_id: currentJob }),
-    });
-  } catch (e) {
-    el("uploadMsg").textContent = e.message;
-    el("uploadMsg").className = "msg err";
-  } finally {
-    el("btnCancelOcr").disabled = false;
-  }
-};
-
-el("btnCancelAllOcr").onclick = async () => {
-  el("btnCancelAllOcr").disabled = true;
-  el("uploadMsg").textContent = "Cancelling all OCR jobs…";
-  try {
-    await api("/api/upload/cancel", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ all: true }),
-    });
-  } catch (e) {
-    el("uploadMsg").textContent = e.message;
-    el("uploadMsg").className = "msg err";
-  } finally {
-    el("btnCancelAllOcr").disabled = false;
-  }
-};
-
 window.onJobDone = (p) => {
   const depth = p.queue_depth ?? (p.detail && p.detail.queue_depth) ?? 0;
-  if (p.kind === "ocr" || (p.detail && p.detail.extract)) {
-    el("btnCancelOcr").disabled = false;
-    el("btnCancelAllOcr").disabled = false;
-    if (!p.ocr_busy && depth === 0 && p.status !== "running") {
-      el("btnCancelOcr").hidden = true;
-      el("btnCancelAllOcr").hidden = true;
-    }
-  }
   if (p.detail && p.detail.extract) {
     currentJob = p.detail.job_id || currentJob;
     // Keep month in sync with completed batch for review/commit
@@ -671,13 +623,6 @@ window.onJobDone = (p) => {
 
 window.onJobError = (p) => {
   if (p.kind === "ocr" || p.status === "cancelled") {
-    el("btnCancelOcr").disabled = false;
-    el("btnCancelAllOcr").disabled = false;
-    const depth = p.queue_depth || 0;
-    if (!p.ocr_busy && depth === 0) {
-      el("btnCancelOcr").hidden = true;
-      el("btnCancelAllOcr").hidden = true;
-    }
     if (p.status === "cancelled" || /cancel/i.test(p.message || "")) {
       el("uploadMsg").textContent = p.message || "OCR cancelled.";
       el("uploadMsg").className = "msg";
