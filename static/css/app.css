@@ -85,7 +85,7 @@ main {
 }
 main.split-data {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) min(40vw, 100%) minmax(0, 0.55fr);
+  grid-template-columns: minmax(0, 1fr) min(40vw, 100%) minmax(0, 1fr);
   column-gap: .75rem;
   align-items: start;
   padding: .75rem 1rem 2.5rem;
