@@ -173,8 +173,29 @@ let reviewDirty = false;
 let reviewSaving = false;
 let reviewTimer = null;
 
+function extractHasRows(extract) {
+  const tables = (extract && extract.tables) || [];
+  return tables.some(t => (t.rows || []).some(row =>
+    (row || []).some(cell => String(cell || "").trim())
+  ));
+}
+
+function hideReview() {
+  const sec = el("reviewSection");
+  if (sec) sec.hidden = true;
+  el("tableWrap").innerHTML = "";
+  el("btnCommit").hidden = true;
+  el("btnClearReview").hidden = true;
+  el("reviewMsg").textContent = "";
+  currentExtract = null;
+}
+
 function showReview(extract, scroll) {
-  currentExtract = extract || { tables: [] };
+  if (!extractHasRows(extract)) {
+    hideReview();
+    return false;
+  }
+  currentExtract = extract;
   const sec = el("reviewSection");
   const reveal = scroll || sec.hidden;
   sec.hidden = false;
@@ -182,6 +203,7 @@ function showReview(extract, scroll) {
   el("btnClearReview").hidden = false;
   renderTable(currentExtract);
   if (reveal) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+  return true;
 }
 
 function markReviewDirty() {
@@ -219,14 +241,15 @@ function editingReview() {
 }
 
 function applySharedReview(r) {
-  if (!r || !r.job_id || !r.extract) {
-    if (!r || !r.job_id) {
-      if (currentJob && !reviewDirty && !editingReview() && el("reviewSection") && !el("reviewSection").hidden) {
-        const cleared = r && r.closed_status === "cleared";
-        dismissReview(cleared
+  if (window._ocrRunning) return;
+  if (!r || !r.job_id || !extractHasRows(r.extract)) {
+    if (currentJob && !reviewDirty && !editingReview() && el("reviewSection") && !el("reviewSection").hidden) {
+      const cleared = r && r.closed_status === "cleared";
+      dismissReview(!r || !r.job_id
+        ? (cleared
           ? "Review cleared. Nothing was saved."
-          : "This sheet was already sent to the datastore.");
-      }
+          : "This sheet was already sent to the datastore.")
+        : "OCR finished with no rows to review.");
     }
     return;
   }
@@ -577,9 +600,11 @@ el("btnUpload").onclick = async () => {
   try {
     const r = await api("/api/upload", { method: "POST", body: fd });
     currentJob = r.job_id;
+    window._ocrRunning = true;
     batch.forEach(p => URL.revokeObjectURL(p.url));
     stagedPhotos = stagedPhotos.filter(p => !batch.includes(p));
     renderPhotoPreview();
+    hideReview();
     if (r.state === "queued") {
       el("uploadMsg").textContent =
         `Queued job ${r.job_id} (${r.n_files} photos). ${r.queue_depth} waiting ahead/behind.`;
@@ -599,13 +624,16 @@ window.onJobDone = (p) => {
   const depth = p.queue_depth ?? (p.detail && p.detail.queue_depth) ?? 0;
   if (p.detail && p.detail.extract) {
     currentJob = p.detail.job_id || currentJob;
-    // Keep month in sync with completed batch for review/commit
     if (p.detail.month) el("month").value = p.detail.month;
-    showReview(p.detail.extract, true);
     const qnote = depth > 0 ? ` (${depth} more in queue)` : "";
-    el("uploadMsg").textContent = `OCR done — review below.${qnote}`;
-    el("uploadMsg").className = "msg ok";
-    el("reviewMsg").textContent = "";
+    if (showReview(p.detail.extract, true)) {
+      el("uploadMsg").textContent = `OCR done — review below.${qnote}`;
+      el("uploadMsg").className = "msg ok";
+      el("reviewMsg").textContent = "";
+    } else {
+      el("uploadMsg").textContent = `OCR finished with no rows to review.${qnote}`;
+      el("uploadMsg").className = "msg";
+    }
   }
   updateQueueMsg(p);
   if (p.kind === "chat" && p.detail && p.detail.answer) {
@@ -655,16 +683,14 @@ function updateQueueMsg(p) {
 window.updateQueueMsg = updateQueueMsg;
 
 function dismissReview(message) {
-  el("tableWrap").innerHTML = "";
-  el("btnCommit").hidden = true;
-  el("btnClearReview").hidden = true;
-  el("reviewSection").hidden = false;
-  el("reviewMsg").textContent = message;
-  el("reviewMsg").className = "msg ok";
+  hideReview();
   currentJob = null;
-  currentExtract = null;
   reviewStamp = null;
   reviewDirty = false;
+  if (message) {
+    el("uploadMsg").textContent = message;
+    el("uploadMsg").className = "msg ok";
+  }
 }
 
 el("btnClearReview").onclick = async () => {
@@ -698,8 +724,12 @@ el("btnCommit").onclick = async () => {
         extract: collectExtract(),
       }),
     });
-    el("reviewMsg").textContent = `Saved ${r.lines != null ? r.lines : r.written} bill lines for ${r.month}. Go to Billing →`;
-    el("reviewMsg").className = "msg ok";
+    el("uploadMsg").textContent = `Saved ${r.lines != null ? r.lines : r.written} bill lines for ${r.month}. Go to Billing →`;
+    el("uploadMsg").className = "msg ok";
+    hideReview();
+    currentJob = null;
+    reviewStamp = null;
+    reviewDirty = false;
   } catch (e) {
     el("reviewMsg").textContent = e.message;
     el("reviewMsg").className = "msg err";
