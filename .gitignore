@@ -1,4 +1,4 @@
-# Byte-compiled / optimized / DLL files
+﻿# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
 *$py.class
@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project
+.env.*
+!.env.example
+data/
+.tmp/
+ocr_bench/
+bench_results/
+ground_truth/
+scripts/update_new_sheet_gold.py
+.DS_Store
+Thumbs.db

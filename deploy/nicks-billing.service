@@ -1,0 +1,22 @@
+[Unit]
+Description=Nick's Lawn Care Billing
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=billing
+Group=billing
+WorkingDirectory=/opt/nicks_lawn_care_billing
+EnvironmentFile=/etc/nicks-billing.env
+Environment=PYTHONPATH=/opt/nicks_lawn_care_billing:/opt/ray-hive
+Environment=RAY_HIVE=/opt/ray-hive
+Environment=HOST=0.0.0.0
+Environment=PORT=8787
+ExecStart=/opt/nicks_lawn_care_billing/.venv/bin/python -u run.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

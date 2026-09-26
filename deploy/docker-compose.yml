@@ -1,0 +1,42 @@
+services:
+  nicks-billing:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: nicks-billing
+    env_file:
+      - ../.env
+    ports:
+      - "8787:8787"
+    restart: unless-stopped
+    # Needs LAN reachability to Postgres :5433, MinIO :9000, Ray :8000/:10001
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Optional lab mailstack: docker compose --profile mail up -d
+  mailserver:
+    profiles: ["mail"]
+    image: ghcr.io/docker-mailserver/docker-mailserver:latest
+    container_name: nicks-mailserver
+    hostname: mail
+    domainname: basicoverflow.com
+    env_file:
+      - mailserver/mail.env
+    ports:
+      - "25:25"
+      - "587:587"
+      - "465:465"
+    volumes:
+      - mail-data:/var/mail
+      - mail-state:/var/mail-state
+      - mail-logs:/var/log/mail
+      - ./mailserver/config/:/tmp/docker-mailserver/
+    restart: unless-stopped
+    stop_grace_period: 1m
+    cap_add:
+      - NET_ADMIN
+
+volumes:
+  mail-data:
+  mail-state:
+  mail-logs:

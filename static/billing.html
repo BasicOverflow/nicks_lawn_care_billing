@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Billing — Nick's Lawn Care</title>
+  <link rel="stylesheet" href="/static/css/app.css?v=3"/>
+</head>
+<body>
+<header class="top">
+  <span class="brand">Nick's Lawn Care</span>
+  <nav class="nav">
+    <a href="/data">Data</a>
+    <a class="active" href="/billing">Billing</a>
+  </nav>
+  <div class="model-bar">
+    <span id="modelStatus">Model: …</span>
+    <button type="button" id="btnLoadModel">Load model</button>
+  </div>
+  <div class="progress-bar">
+    <span id="progressStatus">idle</span>
+    <div class="track"><div class="fill" id="progressFill"></div></div>
+    <span id="progressMsg"></span>
+  </div>
+</header>
+<main>
+  <h1>Billing</h1>
+  <p class="hint">Generate invoices from confirmed knowledge. View PDFs here, download packs, or email clients who have an address on file.</p>
+
+  <section class="card">
+    <h2>Month</h2>
+    <label>Select month with confirmed work</label>
+    <select id="month"></select>
+    <div class="row-actions">
+      <button type="button" id="btnGenerate">Generate PDFs</button>
+      <button type="button" id="btnRefresh" class="secondary">Refresh list</button>
+    </div>
+    <p class="msg" id="genMsg"></p>
+  </section>
+
+  <section class="card">
+    <h2>Bills</h2>
+    <div class="row-actions">
+      <button type="button" id="btnViewAll" class="secondary">View all bills</button>
+      <button type="button" id="btnEmail">Email all bills with an email</button>
+    </div>
+    <p class="msg" id="mailMsg"></p>
+    <div id="billList"><p class="hint">Generate or pick a month.</p></div>
+    <div class="row-actions">
+      <a class="btn" id="btnZipAll" href="#">Download all bills</a>
+      <a class="btn secondary" id="btnZipMail" href="#">Download all mailing-only bills</a>
+      <a class="btn secondary" id="btnTax" href="#">Tax table (TSV)</a>
+    </div>
+  </section>
+
+  <section class="card" id="viewerCard" hidden>
+    <h2 id="viewerTitle">Bill viewer</h2>
+    <div class="row-actions">
+      <button type="button" id="btnCloseViewer" class="secondary">Close viewer</button>
+    </div>
+    <div id="viewerStack" class="pdf-stack"></div>
+  </section>
+</main>
+<script src="/static/js/app.js?v=3"></script>
+<script>
+let lastBills = [];
+
+function pdfUrl(key) {
+  return `/api/billing/pdf?key=${encodeURIComponent(key)}&t=${Date.now()}`;
+}
+
+function lineRowHtml(line) {
+  const id = line && line.id != null ? line.id : "";
+  const desc = escapeAttr((line && line.description) || "");
+  const amt = line && line.amount != null ? line.amount : "";
+  return `<tr data-id="${id}">
+    <td><input class="ed-desc" value="${desc}"/></td>
+    <td class="amt-cell"><input class="ed-amt" type="number" step="0.01" value="${amt}"/></td>
+    <td><button type="button" class="linkish ed-del">Remove</button></td>
+  </tr>`;
+}
+
+function escapeAttr(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+  }[c]));
+}
+
+function fillEditor(editor, detail) {
+  const nameEl = editor.querySelector(".ed-name");
+  const emailEl = editor.querySelector(".ed-email");
+  const addrEl = editor.querySelector(".ed-address");
+  if (nameEl) nameEl.value = detail.client_name ?? "";
+  if (emailEl) emailEl.value = detail.email ?? "";
+  if (addrEl) addrEl.value = detail.address ?? "";
+
+  const tbody = editor.querySelector("tbody.ed-lines-body") || editor.querySelector(".edit-lines tbody");
+  if (!tbody) return;
+  const lines = Array.isArray(detail.lines) ? detail.lines : [];
+  tbody.replaceChildren();
+  const rows = lines.length ? lines : [{}];
+  rows.forEach(line => {
+    const tr = document.createElement("tr");
+    tr.dataset.id = line.id != null ? String(line.id) : "";
+    const tdDesc = document.createElement("td");
+    const inDesc = document.createElement("input");
+    inDesc.className = "ed-desc";
+    inDesc.value = line.description != null ? String(line.description) : "";
+    tdDesc.appendChild(inDesc);
+    const tdAmt = document.createElement("td");
+    tdAmt.className = "amt-cell";
+    const inAmt = document.createElement("input");
+    inAmt.className = "ed-amt";
+    inAmt.type = "number";
+    inAmt.step = "0.01";
+    inAmt.value = line.amount != null && line.amount !== "" ? String(line.amount) : "";
+    tdAmt.appendChild(inAmt);
+    const tdDel = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "linkish ed-del";
+    btn.textContent = "Remove";
+    btn.onclick = () => {
+      if (tbody.children.length <= 1) {
+        inDesc.value = "";
+        inAmt.value = "";
+        tr.dataset.id = "";
+        return;
+      }
+      tr.remove();
+    };
+    tdDel.appendChild(btn);
+    tr.append(tdDesc, tdAmt, tdDel);
+    tbody.appendChild(tr);
+  });
+}
+
+function showViewer(bills, title) {
+  const card = el("viewerCard");
+  const stack = el("viewerStack");
+  el("viewerTitle").textContent = title || "Bill viewer";
+  stack.innerHTML = "";
+  bills.forEach(b => {
+    const block = document.createElement("div");
+    block.className = "pdf-block";
+    block.dataset.clientId = String(b.client_id);
+    block.innerHTML = `
+      <div class="pdf-toolbar">
+        <h3>${escapeHtml(b.client_name)}</h3>
+        <button type="button" class="secondary btn-edit-bill">Edit bill</button>
+      </div>
+      <div class="bill-editor" hidden>
+        <p class="hint">Fields below are filled from the current invoice. Edit any line or contact info, then save to regenerate the PDF.</p>
+        <label>Client</label>
+        <input class="ed-name" readonly/>
+        <label>Email</label>
+        <input class="ed-email" type="text" autocomplete="off"/>
+        <label>Address</label>
+        <input class="ed-address" type="text" autocomplete="off"/>
+        <label>Line items</label>
+        <table class="edit-lines"><thead><tr><th>Description</th><th>Amount</th><th></th></tr></thead>
+        <tbody class="ed-lines-body"></tbody></table>
+        <div class="row-actions">
+          <button type="button" class="secondary ed-add">Add line</button>
+          <button type="button" class="ed-save">Save &amp; regenerate PDF</button>
+          <button type="button" class="secondary ed-cancel">Cancel</button>
+        </div>
+        <p class="msg ed-msg"></p>
+      </div>
+      <iframe class="pdf-frame" title="${escapeHtml(b.client_name)}" src="${pdfUrl(b.s3_key)}"></iframe>`;
+    stack.appendChild(block);
+    wireEditor(block, b);
+  });
+  card.hidden = false;
+  card.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function wireEditor(block, bill) {
+  const editor = block.querySelector(".bill-editor");
+  const btnEdit = block.querySelector(".btn-edit-bill");
+  const tbody = editor.querySelector(".ed-lines-body");
+  const msg = editor.querySelector(".ed-msg");
+  const frame = block.querySelector(".pdf-frame");
+  const clientId = bill.client_id ?? block.dataset.clientId;
+  let open = false;
+
+  btnEdit.onclick = async () => {
+    if (open) {
+      editor.hidden = true;
+      open = false;
+      btnEdit.textContent = "Edit bill";
+      return;
+    }
+    editor.hidden = false;
+    open = true;
+    btnEdit.textContent = "Hide editor";
+
+    // Prefill from list payload (already includes address + lines)
+    fillEditor(editor, {
+      client_name: bill.client_name || "",
+      email: bill.email || "",
+      address: bill.address || "",
+      lines: bill.lines || [],
+    });
+    const n = (bill.lines || []).length;
+    msg.textContent = n ? `${n} line(s) loaded from invoice.` : "Loading invoice details…";
+    msg.className = "msg";
+
+    try {
+      const month = el("month").value;
+      if (!month || clientId == null || clientId === "") {
+        throw new Error("Missing month or client id");
+      }
+      const detail = await api(`/api/billing/${encodeURIComponent(month)}/edit/${encodeURIComponent(clientId)}`);
+      bill.email = detail.email || "";
+      bill.address = detail.address || "";
+      bill.lines = detail.lines || [];
+      bill.s3_key = detail.s3_key || bill.s3_key;
+      fillEditor(editor, detail);
+      msg.textContent = (detail.lines || []).length
+        ? `${detail.lines.length} line(s) loaded — edit any field below.`
+        : "No line items found for this client/month.";
+      msg.className = "msg ok";
+    } catch (e) {
+      if (!(bill.lines || []).length && !(bill.address || bill.email)) {
+        msg.textContent = e.message || String(e);
+        msg.className = "msg err";
+      } else {
+        msg.textContent = `Using cached invoice fields (${e.message})`;
+        msg.className = "msg";
+      }
+    }
+  };
+
+  editor.querySelector(".ed-add").onclick = () => {
+    fillEditor(editor, {
+      client_name: editor.querySelector(".ed-name").value,
+      email: editor.querySelector(".ed-email").value,
+      address: editor.querySelector(".ed-address").value,
+      lines: [
+        ...[...tbody.querySelectorAll("tr")].map(tr => ({
+          id: tr.dataset.id || null,
+          description: tr.querySelector(".ed-desc").value,
+          amount: tr.querySelector(".ed-amt").value,
+        })),
+        { description: "", amount: "" },
+      ],
+    });
+  };
+
+  editor.querySelector(".ed-cancel").onclick = () => {
+    editor.hidden = true;
+    open = false;
+    btnEdit.textContent = "Edit bill";
+  };
+
+  editor.querySelector(".ed-save").onclick = async () => {
+    const month = el("month").value;
+    const lines = [...tbody.querySelectorAll("tr")].map(tr => ({
+      id: tr.dataset.id ? Number(tr.dataset.id) : null,
+      description: tr.querySelector(".ed-desc").value,
+      amount: tr.querySelector(".ed-amt").value,
+    }));
+    msg.textContent = "Saving…";
+    msg.className = "msg";
+    try {
+      const r = await api(`/api/billing/${encodeURIComponent(month)}/edit/${encodeURIComponent(clientId)}`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          email: editor.querySelector(".ed-email").value,
+          address: editor.querySelector(".ed-address").value,
+          lines,
+        }),
+      });
+      bill.s3_key = r.bill.s3_key;
+      bill.email = r.bill.email;
+      bill.address = r.detail.address;
+      bill.lines = r.detail.lines;
+      frame.src = pdfUrl(r.bill.s3_key);
+      fillEditor(editor, r.detail);
+      msg.textContent = "PDF updated.";
+      msg.className = "msg ok";
+      refreshBills();
+    } catch (e) {
+      msg.textContent = e.message;
+      msg.className = "msg err";
+    }
+  };
+}
+
+async function loadMonths() {
+  const r = await api("/api/months");
+  const sel = el("month");
+  sel.innerHTML = "";
+  if (!r.months.length) {
+    sel.innerHTML = "<option value=''>No confirmed months yet</option>";
+    el("btnGenerate").disabled = true;
+    return;
+  }
+  el("btnGenerate").disabled = false;
+  r.months.forEach(m => {
+    const o = document.createElement("option");
+    o.value = m; o.textContent = m;
+    sel.appendChild(o);
+  });
+  refreshBills();
+}
+
+async function refreshBills() {
+  const month = el("month").value;
+  if (!month) return;
+  el("btnZipAll").href = `/api/billing/${month}/download.zip?mode=all`;
+  el("btnZipMail").href = `/api/billing/${month}/download.zip?mode=mailing_only`;
+  el("btnTax").href = `/api/billing/${month}/tax.tsv`;
+  try {
+    const r = await api(`/api/billing/${month}/list`);
+    lastBills = r.bills || [];
+    const wrap = el("billList");
+    if (!lastBills.length) {
+      wrap.innerHTML = "<p class='hint'>No PDFs yet for this month — click Generate.</p>";
+      return;
+    }
+    let html = "<table><thead><tr><th>Client</th><th>Email</th><th>Delivery</th><th>View</th><th>Emailed</th></tr></thead><tbody>";
+    lastBills.forEach((b, i) => {
+      const delivery = b.has_email ? "email" : "mail";
+      html += `<tr>
+        <td>${escapeHtml(b.client_name)}</td>
+        <td>${escapeHtml(b.email || "—")}</td>
+        <td>${delivery}</td>
+        <td><button type="button" class="linkish" data-view="${i}">View</button></td>
+        <td>${b.emailed_at ? "yes" : "no"}</td>
+      </tr>`;
+    });
+    html += "</tbody></table>";
+    if (!r.smtp_configured) {
+      html += "<p class='hint'>SMTP not configured — set SMTP_* in .env to email bills.</p>";
+    }
+    wrap.innerHTML = html;
+    wrap.querySelectorAll("[data-view]").forEach(btn => {
+      btn.onclick = () => {
+        const b = lastBills[Number(btn.getAttribute("data-view"))];
+        if (b) showViewer([b], b.client_name);
+      };
+    });
+  } catch (e) {
+    el("billList").innerHTML = `<p class='msg err'>${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+
+el("btnGenerate").onclick = async () => {
+  const month = el("month").value;
+  if (!month) return;
+  try {
+    await api("/api/billing/generate", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ month }),
+    });
+    el("genMsg").textContent = "Generating…";
+  } catch (e) {
+    el("genMsg").textContent = e.message;
+    el("genMsg").className = "msg err";
+  }
+};
+
+el("btnEmail").onclick = async () => {
+  const month = el("month").value;
+  if (!month) return;
+  try {
+    await api(`/api/billing/${month}/email`, { method: "POST" });
+    el("mailMsg").textContent = "Emailing bills that have an email…";
+  } catch (e) {
+    el("mailMsg").textContent = e.message;
+    el("mailMsg").className = "msg err";
+  }
+};
+
+el("btnViewAll").onclick = () => {
+  if (!lastBills.length) {
+    alert("No bills to view yet.");
+    return;
+  }
+  showViewer(lastBills, `All bills — ${el("month").value}`);
+};
+
+el("btnCloseViewer").onclick = () => {
+  el("viewerCard").hidden = true;
+  el("viewerStack").innerHTML = "";
+};
+
+el("btnRefresh").onclick = refreshBills;
+el("month").onchange = refreshBills;
+
+window.onJobDone = (p) => {
+  if (p.kind === "generate" || p.kind === "email") {
+    el("genMsg").textContent = p.message;
+    el("genMsg").className = "msg ok";
+    if (p.kind === "email") {
+      el("mailMsg").textContent = p.message;
+      el("mailMsg").className = "msg ok";
+    }
+    refreshBills();
+  }
+};
+
+loadMonths().catch(e => { el("genMsg").textContent = e.message; });
+</script>
+</body>
+</html>

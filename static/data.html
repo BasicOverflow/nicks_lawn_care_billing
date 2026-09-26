@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Data — Nick's Lawn Care</title>
+  <link rel="stylesheet" href="/static/css/app.css?v=9"/>
+</head>
+<body>
+<header class="top">
+  <span class="brand">Nick's Lawn Care</span>
+  <nav class="nav">
+    <a class="active" href="/data">Data</a>
+    <a href="/billing">Billing</a>
+  </nav>
+  <div class="model-bar">
+    <span id="modelStatus">Model: …</span>
+    <button type="button" id="btnLoadModel">Load model</button>
+  </div>
+  <div class="progress-bar">
+    <span id="progressStatus">idle</span>
+    <div class="track"><div class="fill" id="progressFill"></div></div>
+    <span id="progressMsg"></span>
+  </div>
+</header>
+<main>
+  <h1>Data</h1>
+    <p class="hint">Add multiple photos (files or camera), then Upload &amp; OCR. You can stage and submit more batches while OCR is still running — they queue automatically.</p>
+
+  <section class="card">
+    <h2>Upload</h2>
+    <label>Billing month (YYYY-MM)</label>
+    <input id="month" type="month" required/>
+    <label>Sheet kind</label>
+    <select id="sheetKind">
+      <option value="mowing">Mowing / roster / work completed</option>
+      <option value="hedges">Hedges price list</option>
+      <option value="other">Other</option>
+    </select>
+    <label>Photos</label>
+    <div class="row-actions">
+      <button type="button" id="btnPickFiles" class="secondary">Choose from device</button>
+      <button type="button" id="btnPhoneCamera">Take photo</button>
+    </div>
+    <input id="files" type="file" accept="image/*" multiple hidden/>
+    <input id="filesCapture" type="file" accept="image/*" capture="environment" hidden/>
+    <div id="photoPreview" class="photo-preview"></div>
+    <div class="row-actions">
+      <button type="button" id="btnUpload">Upload &amp; OCR</button>
+      <button type="button" id="btnCancelOcr" class="secondary" hidden>Cancel current OCR</button>
+      <button type="button" id="btnCancelAllOcr" class="secondary" hidden>Cancel all</button>
+      <button type="button" id="btnClearPhotos" class="secondary">Clear photos</button>
+    </div>
+    <p class="msg" id="uploadMsg"></p>
+    <p class="hint" id="queueMsg"></p>
+  </section>
+
+  <section class="card" id="reviewSection" hidden>
+    <h2>Review</h2>
+    <p class="hint">Fix the table with a short correction if needed, then send everything into the datastore.</p>
+    <div id="tableWrap"></div>
+
+    <div id="conflictsPanel" class="conflicts" hidden>
+      <h3>Conflicts with existing data</h3>
+      <p class="hint">These names already exist with different values. Describe how to resolve them in plain English before sending.</p>
+      <div id="conflictsList"></div>
+      <label>How should we resolve these?</label>
+      <textarea id="conflictNl" placeholder="e.g. Keep the sheet prices for MOSHER, but keep Kevin's address from the datastore"></textarea>
+    </div>
+
+    <label>Correction (optional)</label>
+    <textarea id="correction" placeholder="e.g. Fix MOSHER price to $80"></textarea>
+    <div class="row-actions">
+      <button type="button" id="btnCorrect" class="secondary">Apply correction</button>
+      <button type="button" id="btnCommit">Send to datastore</button>
+    </div>
+    <pre class="msg" id="reviewMsg"></pre>
+  </section>
+
+  <div class="section-divider" role="separator" aria-label="Or chat with your data">
+    <span class="section-divider-line" aria-hidden="true"></span>
+    <span class="section-divider-label">or</span>
+    <span class="section-divider-line" aria-hidden="true"></span>
+  </div>
+
+  <section class="card chat-card">
+    <div class="chat-header">
+      <div class="chat-header-top">
+        <h2>Chat with your data</h2>
+        <button type="button" id="btnClearChat" class="secondary chat-clear">Clear chat</button>
+      </div>
+      <p class="hint">Ask questions or update clients, work, and bills. Model must be loaded.</p>
+    </div>
+    <div id="chatLog" class="chat-log" aria-live="polite">
+      <div class="chat-empty" id="chatEmpty">
+        <p>Start a conversation about your billing data.</p>
+        <div class="chat-suggestions">
+          <button type="button" class="chip" data-suggest="Who was billed in 2025-09 without an email?">Who needs a mailed bill?</button>
+          <button type="button" class="chip" data-suggest="List clients and their mow prices">List mow prices</button>
+          <button type="button" class="chip" data-suggest="Show work items for this month">Show recent work</button>
+        </div>
+      </div>
+    </div>
+    <form id="chatForm" class="chat-composer" action="#" method="post">
+      <textarea id="chatInput" rows="1" placeholder="Message your data…" enterkeyhint="send"></textarea>
+      <button type="submit" id="btnChat" class="chat-send" title="Send">Send</button>
+    </form>
+    <p class="msg chat-status" id="chatMsg"></p>
+  </section>
+</main>
+<script src="/static/js/app.js?v=7"></script>
+<script>
+let currentJob = null;
+let currentExtract = null;
+let currentConflicts = [];
+let chatHistory = [];
+/** @type {{file: File, url: string}[]} */
+let stagedPhotos = [];
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+
+function renderPhotoPreview() {
+  const wrap = el("photoPreview");
+  wrap.innerHTML = "";
+  if (!stagedPhotos.length) {
+    wrap.innerHTML = "<p class='hint'>No photos yet — choose from device or take a photo.</p>";
+    return;
+  }
+  stagedPhotos.forEach((p, i) => {
+    const fig = document.createElement("figure");
+    fig.className = "photo-thumb";
+    fig.innerHTML = `<img src="${p.url}" alt=""/><figcaption>${escapeHtml(p.file.name)}</figcaption>
+      <button type="button" class="linkish" data-rm="${i}">Remove</button>`;
+    wrap.appendChild(fig);
+  });
+  wrap.querySelectorAll("[data-rm]").forEach(btn => {
+    btn.onclick = () => {
+      const i = Number(btn.getAttribute("data-rm"));
+      URL.revokeObjectURL(stagedPhotos[i].url);
+      stagedPhotos.splice(i, 1);
+      renderPhotoPreview();
+    };
+  });
+}
+
+function addFiles(fileList) {
+  for (const f of fileList) {
+    if (!f.type.startsWith("image/")) continue;
+    stagedPhotos.push({ file: f, url: URL.createObjectURL(f) });
+  }
+  renderPhotoPreview();
+}
+
+el("btnPickFiles").onclick = () => el("files").click();
+el("btnPhoneCamera").onclick = () => el("filesCapture").click();
+el("files").onchange = () => {
+  addFiles(el("files").files);
+  el("files").value = "";
+};
+el("filesCapture").onchange = () => {
+  addFiles(el("filesCapture").files);
+  el("filesCapture").value = "";
+};
+el("btnClearPhotos").onclick = () => {
+  stagedPhotos.forEach(p => URL.revokeObjectURL(p.url));
+  stagedPhotos = [];
+  renderPhotoPreview();
+};
+
+function showReview(extract, conflicts) {
+  currentExtract = extract;
+  currentConflicts = conflicts || [];
+  const sec = el("reviewSection");
+  sec.hidden = false;
+  renderTable(extract);
+  renderConflicts(currentConflicts);
+  sec.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderTable(extract) {
+  const wrap = el("tableWrap");
+  const tables = (extract && extract.tables) || [];
+  if (!tables.length) {
+    wrap.innerHTML = "<p class='hint'>No tables in extract. Notes: " +
+      escapeHtml(((extract && extract.notes) || []).slice(0, 3).join(" | ")) + "</p>";
+    return;
+  }
+  let html = "";
+  tables.forEach((t, ti) => {
+    const cols = t.columns || [];
+    html += `<h3 class="table-title">Table ${ti + 1}</h3><table><thead><tr>`;
+    cols.forEach(c => { html += `<th>${escapeHtml(c)}</th>`; });
+    html += "</tr></thead><tbody>";
+    (t.rows || []).forEach(row => {
+      html += "<tr>";
+      (row || []).forEach(cell => { html += `<td>${escapeHtml(cell)}</td>`; });
+      html += "</tr>";
+    });
+    html += "</tbody></table>";
+  });
+  wrap.innerHTML = html;
+}
+
+function renderConflicts(conflicts) {
+  const panel = el("conflictsPanel");
+  const list = el("conflictsList");
+  if (!conflicts || !conflicts.length) {
+    panel.hidden = true;
+    list.innerHTML = "";
+    el("conflictNl").value = "";
+    return;
+  }
+  panel.hidden = false;
+  let html = "<ul class='conflict-ul'>";
+  conflicts.forEach(c => {
+    const issues = (c.issues || []).map(i =>
+      `<li><strong>${escapeHtml(i.field)}</strong>: knowledge <code>${escapeHtml(i.knowledge)}</code> → sheet <code>${escapeHtml(i.incoming)}</code></li>`
+    ).join("");
+    html += `<li class="conflict-item"><strong>${escapeHtml(c.name)}</strong><ul>${issues}</ul></li>`;
+  });
+  html += "</ul>";
+  list.innerHTML = html;
+}
+
+function appendChat(role, text, { thinking } = {}) {
+  const empty = el("chatEmpty");
+  if (empty) empty.remove();
+  const log = el("chatLog");
+  const row = document.createElement("div");
+  row.className = `chat-row ${role}${thinking ? " thinking" : ""}`;
+  const bubble = document.createElement("div");
+  bubble.className = "chat-bubble";
+  if (thinking) {
+    bubble.innerHTML = `<span class="chat-typing"><span></span><span></span><span></span></span>`;
+  } else {
+    bubble.textContent = text;
+  }
+  row.appendChild(bubble);
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+  return row;
+}
+
+function removeThinking() {
+  el("chatLog").querySelectorAll(".chat-row.thinking").forEach(n => n.remove());
+}
+
+function setChatBusy(busy) {
+  el("chatInput").disabled = !!busy;
+  el("btnChat").disabled = !!busy;
+}
+
+function sendChat() {
+  const input = el("chatInput");
+  const message = input.value.trim();
+  if (!message || input.disabled) return;
+  appendChat("user", message);
+  chatHistory.push({ role: "user", content: message });
+  input.value = "";
+  input.style.height = "auto";
+  el("chatMsg").textContent = "";
+  el("chatMsg").className = "msg chat-status";
+  appendChat("assistant", "", { thinking: true });
+  setChatBusy(true);
+  api("/api/chat", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ message, history: chatHistory.slice(0, -1) }),
+  }).catch(e => {
+    removeThinking();
+    appendChat("assistant", e.message || "Request failed");
+    el("chatMsg").textContent = e.message;
+    el("chatMsg").className = "msg chat-status err";
+    setChatBusy(false);
+  });
+}
+
+el("btnUpload").onclick = async () => {
+  const month = el("month").value;
+  if (!stagedPhotos.length || !month) {
+    el("uploadMsg").textContent = "Pick a month and add at least one photo.";
+    el("uploadMsg").className = "msg err";
+    return;
+  }
+  const batch = stagedPhotos.slice();
+  const fd = new FormData();
+  fd.append("month", month);
+  fd.append("sheet_kind", el("sheetKind").value);
+  batch.forEach(p => fd.append("files", p.file, p.file.name));
+  el("uploadMsg").textContent = `Submitting ${batch.length} photo${batch.length === 1 ? "" : "s"}…`;
+  el("uploadMsg").className = "msg";
+  el("btnUpload").disabled = true;
+  try {
+    const r = await api("/api/upload", { method: "POST", body: fd });
+    currentJob = r.job_id;
+    // Clear staged so more can be added for the next batch while OCR runs
+    batch.forEach(p => URL.revokeObjectURL(p.url));
+    stagedPhotos = stagedPhotos.filter(p => !batch.includes(p));
+    renderPhotoPreview();
+    el("btnCancelOcr").hidden = false;
+    el("btnCancelAllOcr").hidden = false;
+    if (r.state === "queued") {
+      el("uploadMsg").textContent =
+        `Queued job ${r.job_id} (${r.n_files} photos). ${r.queue_depth} waiting ahead/behind.`;
+      el("uploadMsg").className = "msg ok";
+    } else {
+      el("uploadMsg").textContent = `OCR running (job ${r.job_id}, ${r.n_files} photos)…`;
+    }
+  } catch (e) {
+    el("uploadMsg").textContent = e.message;
+    el("uploadMsg").className = "msg err";
+  } finally {
+    el("btnUpload").disabled = false;
+  }
+};
+
+el("btnCancelOcr").onclick = async () => {
+  el("btnCancelOcr").disabled = true;
+  el("uploadMsg").textContent = "Cancelling current OCR…";
+  try {
+    await api("/api/upload/cancel", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ job_id: currentJob }),
+    });
+  } catch (e) {
+    el("uploadMsg").textContent = e.message;
+    el("uploadMsg").className = "msg err";
+  } finally {
+    el("btnCancelOcr").disabled = false;
+  }
+};
+
+el("btnCancelAllOcr").onclick = async () => {
+  el("btnCancelAllOcr").disabled = true;
+  el("uploadMsg").textContent = "Cancelling all OCR jobs…";
+  try {
+    await api("/api/upload/cancel", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ all: true }),
+    });
+  } catch (e) {
+    el("uploadMsg").textContent = e.message;
+    el("uploadMsg").className = "msg err";
+  } finally {
+    el("btnCancelAllOcr").disabled = false;
+  }
+};
+
+window.onJobDone = (p) => {
+  const depth = p.queue_depth ?? (p.detail && p.detail.queue_depth) ?? 0;
+  if (p.kind === "ocr" || (p.detail && p.detail.extract)) {
+    el("btnCancelOcr").disabled = false;
+    el("btnCancelAllOcr").disabled = false;
+    if (!p.ocr_busy && depth === 0 && p.status !== "running") {
+      el("btnCancelOcr").hidden = true;
+      el("btnCancelAllOcr").hidden = true;
+    }
+  }
+  if (p.detail && p.detail.extract) {
+    currentJob = p.detail.job_id || currentJob;
+    // Keep month in sync with completed batch for review/commit
+    if (p.detail.month) el("month").value = p.detail.month;
+    showReview(p.detail.extract, p.detail.conflicts || []);
+    const qnote = depth > 0 ? ` (${depth} more in queue)` : "";
+    el("uploadMsg").textContent = `OCR done — review below.${qnote}`;
+    el("uploadMsg").className = "msg ok";
+    el("reviewMsg").textContent = "";
+  }
+  updateQueueMsg(p);
+  if (p.kind === "chat" && p.detail && p.detail.answer) {
+    removeThinking();
+    const answer = p.detail.answer;
+    chatHistory.push({ role: "assistant", content: answer });
+    appendChat("assistant", answer);
+    const n = (p.detail.mutations_applied || []).length;
+    el("chatMsg").textContent = n ? `Updated datastore (${n} change${n === 1 ? "" : "s"}).` : "";
+    el("chatMsg").className = n ? "msg chat-status ok" : "msg chat-status";
+    setChatBusy(false);
+    el("chatInput").focus();
+  }
+};
+
+window.onJobError = (p) => {
+  if (p.kind === "ocr" || p.status === "cancelled") {
+    el("btnCancelOcr").disabled = false;
+    el("btnCancelAllOcr").disabled = false;
+    const depth = p.queue_depth || 0;
+    if (!p.ocr_busy && depth === 0) {
+      el("btnCancelOcr").hidden = true;
+      el("btnCancelAllOcr").hidden = true;
+    }
+    if (p.status === "cancelled" || /cancel/i.test(p.message || "")) {
+      el("uploadMsg").textContent = p.message || "OCR cancelled.";
+      el("uploadMsg").className = "msg";
+    }
+  }
+  updateQueueMsg(p);
+  if (p.kind === "chat") {
+    removeThinking();
+    appendChat("assistant", p.message || "Chat failed");
+    el("chatMsg").textContent = p.message || "Chat failed";
+    el("chatMsg").className = "msg chat-status err";
+    setChatBusy(false);
+  }
+};
+
+function updateQueueMsg(p) {
+  const qel = el("queueMsg");
+  if (!qel) return;
+  const depth = p.queue_depth || 0;
+  const queued = p.queued || [];
+  if (depth > 0) {
+    qel.textContent = `Queue: ${depth} batch${depth === 1 ? "" : "es"} waiting` +
+      (queued.length ? ` — ${queued.map(x => x.job_id.slice(0,6) + " (" + x.n_files + ")").join(", ")}` : "");
+  } else if (p.ocr_busy || (p.kind === "ocr" && p.status === "running")) {
+    qel.textContent = "OCR running — you can still add photos and submit another batch.";
+  } else {
+    qel.textContent = "";
+  }
+}
+window.updateQueueMsg = updateQueueMsg;
+
+el("btnCorrect").onclick = async () => {
+  if (!currentJob) return;
+  const instruction = el("correction").value.trim();
+  if (!instruction) return;
+  try {
+    await api("/api/jobs/" + currentJob + "/correct", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ instruction, month: el("month").value }),
+    });
+    el("reviewMsg").textContent = "Correction running…";
+    el("reviewMsg").className = "msg";
+  } catch (e) {
+    el("reviewMsg").textContent = e.message;
+    el("reviewMsg").className = "msg err";
+  }
+};
+
+el("btnCommit").onclick = async () => {
+  if (!currentJob) return;
+  const month = el("month").value;
+  if (currentConflicts.length && !el("conflictNl").value.trim()) {
+    el("reviewMsg").textContent = "Conflicts found — describe how to resolve them, then send.";
+    el("reviewMsg").className = "msg err";
+    el("conflictNl").focus();
+    return;
+  }
+  try {
+    const r = await api("/api/jobs/" + currentJob + "/commit", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        month,
+        sheet_kind: el("sheetKind").value,
+        conflict_nl: el("conflictNl").value,
+      }),
+    });
+    el("reviewMsg").textContent =
+      `Saved ${r.written} rows for ${r.month}` +
+      (r.conflicts_resolved ? ` (${r.conflicts_resolved} conflicts resolved).` : ".") +
+      " Go to Billing →";
+    el("reviewMsg").className = "msg ok";
+  } catch (e) {
+    el("reviewMsg").textContent = e.message;
+    el("reviewMsg").className = "msg err";
+  }
+};
+
+el("chatForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  sendChat();
+});
+el("chatInput").addEventListener("keydown", (e) => {
+  const isEnter = e.key === "Enter" || e.keyCode === 13;
+  if (isEnter && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    e.stopPropagation();
+    sendChat();
+  }
+});
+el("chatInput").addEventListener("input", () => {
+  const t = el("chatInput");
+  t.style.height = "auto";
+  t.style.height = Math.min(t.scrollHeight, 140) + "px";
+});
+el("btnClearChat").onclick = () => {
+  chatHistory = [];
+  const log = el("chatLog");
+  log.innerHTML = `
+    <div class="chat-empty" id="chatEmpty">
+      <p>Start a conversation about your billing data.</p>
+      <div class="chat-suggestions">
+        <button type="button" class="chip" data-suggest="Who was billed in 2025-09 without an email?">Who needs a mailed bill?</button>
+        <button type="button" class="chip" data-suggest="List clients and their mow prices">List mow prices</button>
+        <button type="button" class="chip" data-suggest="Show work items for this month">Show recent work</button>
+      </div>
+    </div>`;
+  log.querySelectorAll("[data-suggest]").forEach(btn => {
+    btn.onclick = () => {
+      el("chatInput").value = btn.getAttribute("data-suggest");
+      el("chatInput").focus();
+      sendChat();
+    };
+  });
+  el("chatMsg").textContent = "";
+  el("chatMsg").className = "msg chat-status";
+  el("chatInput").value = "";
+  el("chatInput").style.height = "auto";
+  setChatBusy(false);
+  el("chatInput").focus();
+};
+document.querySelectorAll("[data-suggest]").forEach(btn => {
+  btn.onclick = () => {
+    el("chatInput").value = btn.getAttribute("data-suggest");
+    el("chatInput").focus();
+    sendChat();
+  };
+});
+
+const now = new Date();
+el("month").value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+renderPhotoPreview();
+</script>
+</body>
+</html>
