@@ -90,10 +90,10 @@ main.split-data {
   align-items: start;
   padding: .75rem 1rem 2.5rem;
 }
-main.split-data > .data-intro { grid-column: 1 / -1; }
+main.split-data > .data-intro { grid-column: 2; width: min(100%, 50vw); justify-self: center; }
 main.split-data > .data-col { min-width: 0; }
 main.split-data > .data-col-clients { grid-column: 1; }
-main.split-data > .data-col-work { grid-column: 2; }
+main.split-data > .data-col-work { grid-column: 2; width: min(100%, 50vw); justify-self: center; }
 h1 { font-size: 1.35rem; margin: 0 0 .35rem; }
 .hint { color: var(--muted); font-size: .92rem; margin: 0 0 1rem; }
 .card {
@@ -409,6 +409,10 @@ td.row-tools { width: 1%; white-space: nowrap; }
   main.split-data.clients-open {
     display: block;
     padding: .75rem 1rem 2.5rem;
+  }
+  main.split-data > .data-intro,
+  main.split-data > .data-col-work {
+    width: auto;
   }
 }
 @media (max-width: 640px) {
