@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 # Cells are strings so later pipelines can interpret prices, dates, names.
 # additionalProperties allowed so guided decoding never drops unexpected fields.
@@ -519,7 +520,11 @@ Return ONLY JSON.
 
 
 def _locator_line(rec: dict, sheet_kind: str) -> str:
-    """Known Postgres fields that help find the row. The sheet still wins."""
+    """Known Postgres fields that help find the row. The sheet still wins.
+
+    Dollar amounts on file stay out of this line. Filed prices are for billing,
+    and the photographed cell is often a handwritten correction of that price.
+    """
     if isinstance(rec, str):
         return rec
     bits = [str(rec.get("name") or "").strip()]
@@ -534,10 +539,20 @@ def _locator_line(rec: dict, sheet_kind: str) -> str:
     kind = (sheet_kind or "mowing").lower()
     if kind in ("work", "work_completed"):
         bits.append("work dates are not on file — read them from the sheet")
-    notes = str(rec.get("billing_notes") or "").strip()
+    notes = _notes_without_money(str(rec.get("billing_notes") or ""))
     if notes:
         bits.append(f"notes: {notes[:90]}")
     return " — ".join(bits)
+
+
+_MONEY_TEXT = re.compile(r"\$\s*\d+(?:\.\d+)?|\b\d+\.\d{2}\b")
+
+
+def _notes_without_money(notes: str) -> str:
+    cleaned = _MONEY_TEXT.sub("", notes or "")
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([,.;|/])", r"\1", cleaned)
+    return cleaned.strip(" |;-")
 
 
 def guided_chunk_prompt(
@@ -547,11 +562,7 @@ def guided_chunk_prompt(
     sheet_kind: str = "mowing",
     title: str | None = None,
 ) -> str:
-    """Ask the model to pull only the listed knowledge rows from the full page.
-
-    ``names`` may be strings or client records. Record fields are locators
-    from the live knowledge base, not the answer.
-    """
+    """Ask the model to pull only the listed knowledge rows from the full page."""
     col_line = " | ".join(columns)
     bullets = "\n".join(f"- {_locator_line(n, sheet_kind)}" for n in names)
     title_bit = f'Title (if helpful): "{title}".\n' if title else ""
@@ -565,8 +576,8 @@ def guided_chunk_prompt(
     return f"""
 This is a FULL photo of a paper sheet (not a crop).
 {title_bit}From the image, pull the table values ONLY for these known clients.
-Each line starts with who they are. Address, phone, email, and "known price" are already on file.
-Use them only to find the correct horizontal row. The amount in the price column is NOT on file in this prompt. Transcribe the number written on that row.
+Each line starts with who they are. Address, phone, email, and notes are already on file.
+Use them only to find the correct horizontal row. Transcribe the cells written on that row.
 
 {bullets}
 
@@ -575,15 +586,12 @@ Columns left-to-right (use these headers):
 
 Rules:
 - {value_hint}
-- The Hedge / New Price / Amount column is a dollar amount only, like $95 or $157.
-  Never copy the street into that column.
-  WRONG: ["SMITH, Jane", "123 Main St.", "123 Main St.", "notes"]
-  RIGHT: ["SMITH, Jane", "123 Main St.", "$50", "notes"]
 - The Contact/CLIENT cell is the person's name, never the street address.
+- The price/Hedge cell is the dollar amount on that same line. Do not repeat the street there.
 - If the price cell is blank, use "". Handwriting that replaces a crossed-out number wins.
 - Do not copy a neighboring row's price.
 - One JSON row per listed name that is ACTUALLY visible. Omit names that are not on this sheet.
-- Unreadable → "" or "[UNCLEAR]". Do not invent days, addresses, or prices.
+- Unreadable cells are "" or "[UNCLEAR]". Do not invent days, addresses, or prices.
 
 Return ONLY JSON:
 {{
@@ -606,10 +614,10 @@ def guided_price_prompt(records: list, *, sheet_kind: str = "mowing") -> str:
 This is a FULL photo of a paper sheet.
 For each name, read ONLY the {kind} dollar amount on that same horizontal row.
 
-The price is a number such as $52, $95, or $157.
-It is NOT the street address. Do not return "123 Main St." or any road name.
+The price is a dollar amount written in the price column.
+It is NOT the street address. Do not return a road name.
 WRONG: ["SMITH, Jane", "123 Main St."]
-RIGHT: ["SMITH, Jane", "$50"]
+RIGHT: ["SMITH, Jane", "$7"]
 
 If the price cell is blank or crossed out with no replacement, return "".
 Do not reuse the price from the row above or below.
@@ -619,7 +627,7 @@ Do not reuse the price from the row above or below.
 Return ONLY JSON:
 {{
   "title": null,
-  "tables": [{{"caption": null, "columns": ["Contact", "Price"], "rows": [["SMITH, Jane", "$50"]]}}],
+  "tables": [{{"caption": null, "columns": ["Contact", "Price"], "rows": [["SMITH, Jane", "$7"]]}}],
   "notes": [],
   "complete": true
 }}
@@ -659,12 +667,81 @@ Return ONLY JSON with those new rows only.
 """.strip()
 
 
+def guided_gap_prompt(
+    missing: list,
+    blank_names: list[str],
+    extracted_names: list[str],
+    *,
+    columns: list[str],
+    sheet_kind: str,
+    title: str | None = None,
+    ask_others: bool = False,
+) -> str:
+    """Second look that sees what this page already produced.
+
+    Missing names and blank cells come from the extract plus the Postgres
+    roster. Filed dollar amounts are not included.
+    """
+    col_line = " | ".join(columns)
+    title_bit = f'Title hint: "{title}".\n' if title else ""
+    have = "\n".join(f"- {n}" for n in extracted_names[:80]) or "- (none yet)"
+    missing_lines = "\n".join(
+        f"- {_locator_line(rec, sheet_kind)}" for rec in missing if rec
+    )
+    blank_lines = "\n".join(f"- {n}" for n in blank_names if n)
+    sections = [
+        "These contacts are already in the extract. Do not return them again unless one is listed as blank:",
+        have,
+    ]
+    if missing_lines:
+        sections.append(
+            "These known clients have no row yet. If a name is on the sheet, return that full row. If it is not on the sheet, omit it:\n"
+            + missing_lines
+        )
+    if blank_lines:
+        kind = (sheet_kind or "").lower()
+        cell = "date / work-completed cell" if kind in ("work", "work_completed") else "price/Hedge cell"
+        sections.append(
+            f"These rows exist but the {cell} is blank or not a dollar amount. Return the name and the cells on that same line:\n"
+            + blank_lines
+        )
+    if ask_others:
+        sections.append(
+            "Also return any other visible table row whose contact is not in the already-extracted list."
+        )
+    body = "\n\n".join(sections)
+    return f"""
+This is a FULL photo of a paper sheet ({sheet_kind}).
+{title_bit}A first pass already extracted part of the table. Use that list only to see what is still missing. Read every filled cell from the photo, not from the list.
+
+{body}
+
+Columns left-to-right:
+{col_line}
+
+Rules:
+- Return ONLY the missing or blank rows. If nothing is missing, return rows: [].
+- Contact/CLIENT is the name as written, never the street.
+- The price/Hedge cell is the dollar amount on that line. Do not repeat the street there.
+- Handwriting that replaces a crossed-out number wins.
+- Do not copy a neighbor's price. Do not invent rows.
+
+Return ONLY JSON:
+{{
+  "title": null,
+  "tables": [{{"caption": null, "columns": {json.dumps(columns)}, "rows": [["...", ...]]}}],
+  "notes": [],
+  "complete": true
+}}
+""".strip()
+
+
 def guided_notes_prompt(sheet_kind: str, title: str | None = None) -> str:
     title_bit = f'Title hint: "{title}".\n' if title else ""
     return f"""
 This is a FULL photo of a paper sheet.
 {title_bit}Extract ONLY margin / footer / handwritten notes that are NOT inside the main table grid
-(e.g. instructions like "Julie Cameron…", season notes, association notes).
+(a footer about someone who is not a row in the table, a season note, an association note).
 
 Return JSON with empty tables and notes filled:
 {{

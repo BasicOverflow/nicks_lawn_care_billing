@@ -1,4 +1,9 @@
-"""FastAPI entry: static UI + API."""
+"""HTTP app: static billing pages and the JSON API under /api.
+
+OpenAPI at /docs describes that API. Sheet OCR uses Qwen2.5-VL-3B on ray-hive
+(model id qwen25-vl-3b). This process only stores data, builds PDFs, and
+submits the model job.
+"""
 
 from __future__ import annotations
 
@@ -13,12 +18,31 @@ from .routes import router
 
 STATIC = Path(__file__).resolve().parents[1] / "static"
 
-app = FastAPI(title="Nick's Lawn Care Billing", version="1.0.0")
+app = FastAPI(
+    title="Nick's Lawn Care Billing",
+    version="1.0.0",
+    description=(
+        "Upload lawn-care sheet photos, review the OCR table, and store clients "
+        "and monthly work. Generate PDF bills, a tax spreadsheet, and optional email.\n\n"
+        "The vision model is **Qwen2.5-VL-3B-Instruct**, served on ray-hive as "
+        "`qwen25-vl-3b`. Load it with `POST /api/model/load` before OCR or chat. "
+        "Long work returns a `job_id`; poll `GET /api/progress` until `status` is "
+        "`done`, `error`, or `cancelled`."
+    ),
+    openapi_tags=[
+        {"name": "status", "description": "Live progress for OCR, chat, billing, email, and model jobs."},
+        {"name": "model", "description": "Load and unload the Qwen vision model on ray-hive."},
+        {"name": "uploads", "description": "Photo batches, the OCR queue, and plain-language corrections."},
+        {"name": "knowledge", "description": "Clients, months, and the data chat."},
+        {"name": "billing", "description": "PDF bills, edits, downloads, tax export, and email."},
+    ],
+)
 app.include_router(router)
 
 
 @app.on_event("startup")
-def startup():
+def startup() -> None:
+    """Create database tables and the photo bucket if credentials are set."""
     try:
         db.init_db()
     except Exception as e:
@@ -30,18 +54,21 @@ def startup():
         print(f"WARNING: S3 bucket ensure failed: {e}", flush=True)
 
 
-@app.get("/")
+@app.get("/", include_in_schema=False)
 def root():
+    """Send the browser to the data page."""
     return RedirectResponse("/data")
 
 
-@app.get("/data")
+@app.get("/data", include_in_schema=False)
 def data_page():
+    """Sheet upload, review, and data chat."""
     return FileResponse(STATIC / "data.html")
 
 
-@app.get("/billing")
+@app.get("/billing", include_in_schema=False)
 def billing_page():
+    """Monthly bills, downloads, and email."""
     return FileResponse(STATIC / "billing.html")
 
 

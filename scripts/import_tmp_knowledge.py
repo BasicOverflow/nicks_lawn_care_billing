@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""Seed Postgres clients from .tmp templates (Steve/Nick paper office).
+"""Seed Postgres clients from the paper-office files in .tmp.
 
-Sources:
+Sources (all things Nick already has before a photo is taken):
   - Client List_CY2026_Price Increase.xlsx  (mow prices + email/mail notes)
-  - ground_truth hedges gold                (hedge prices + notes)
-  - hedgesclientlist.doc                    (hedge roster fallback)
+  - hedgesclientlist.doc                    (who is on the hedges roster)
   - GNBAClientPhoneList.doc                 (phones)
   - Clients Mailing Labels.docx             (billing / winter addresses)
   - RevisedWorkCompleted.docx               (canonical row order)
   - Lawngroups.doc                          (mowing route groups)
+
+Ground-truth JSON under ground_truth/ is for scoring tests only. This script
+does not read it.
 """
 from __future__ import annotations
 
-import json
 import re
 import sys
 from pathlib import Path
@@ -30,7 +31,7 @@ from openpyxl import load_workbook
 from app import db
 
 TMP = ROOT / ".tmp"
-GOLD_HEDGES = ROOT / "ground_truth/client_info_hedges/IMG_4194.gold.json"
+HEDGES_TEXT = TMP / "_extracted" / "hedgesclientlist.clean.txt"
 
 PARCEL_PREFIXES = (
     "R.O.W.",
@@ -121,35 +122,77 @@ def load_cy2026() -> list[dict]:
     return out
 
 
-def load_hedges_gold() -> list[dict]:
-    if not GOLD_HEDGES.is_file():
+def load_hedges_office() -> list[dict]:
+    """Hedges roster from the Word template extract, not from a scored photo."""
+    if not HEDGES_TEXT.is_file():
         return []
-    data = json.loads(GOLD_HEDGES.read_text(encoding="utf-8"))
-    out = []
-    for r in data.get("rows") or []:
-        name = (r.get("client") or "").strip()
-        if not name:
+    lines = [
+        ln.strip()
+        for ln in HEDGES_TEXT.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    start = 0
+    for i, ln in enumerate(lines):
+        if ln.lower() == "notes" and i >= 1:
+            start = i + 1
+            break
+    name_re = re.compile(r"^[A-Z][A-Z' .\-]+,\s+\S")
+    price_re = re.compile(r"^\$?\d+(?:\.\d+)?(?:\s*/\s*\$?\d+(?:\.\d+)?)?$")
+    addr_re = re.compile(
+        r"\d|Rd\.?|Road|Ln\.?|Lane|St\.?|Street|Ave|Court|Ct\.?",
+        re.I,
+    )
+
+    def is_name(s: str) -> bool:
+        if s.upper().startswith("HEDGES CLIENT") or s.startswith("Julie Cameron"):
+            return False
+        return bool(name_re.match(s)) and not price_re.match(s)
+
+    out: list[dict] = []
+    i = start
+    while i < len(lines):
+        if lines[i].startswith("Julie Cameron") or lines[i].upper().startswith(
+            "HEDGES CLIENT"
+        ):
+            break
+        if not is_name(lines[i]):
+            i += 1
             continue
-        notes = r.get("notes")
-        extras = r.get("extras") or []
-        if extras:
-            extra_bits = [
-                f"{e.get('label')}: ${e.get('amount')}"
-                for e in extras
-                if isinstance(e, dict) and e.get("amount") is not None
-            ]
-            if extra_bits:
-                notes = ((notes + " | ") if notes else "") + "; ".join(extra_bits)
+        name = lines[i]
+        i += 1
+        address = None
+        prices: list[str] = []
+        notes: list[str] = []
+        while i < len(lines) and not is_name(lines[i]):
+            if lines[i].startswith("Julie Cameron") or lines[i].upper().startswith(
+                "HEDGES CLIENT"
+            ):
+                break
+            ln = lines[i]
+            if price_re.match(ln):
+                prices.append(ln)
+            elif address is None and addr_re.search(ln) and len(ln) < 80:
+                address = ln
+            else:
+                notes.append(ln)
+            i += 1
+        hedge_price = None
+        if len(prices) == 1 and "/" not in prices[0]:
+            m = re.search(r"\d+(?:\.\d+)?", prices[0])
+            if m:
+                hedge_price = float(m.group(0))
+        elif prices:
+            notes.append("hedge cell lists " + " and ".join(prices))
         out.append(
             {
                 "name": name,
-                "address": (r.get("address") or None),
-                "hedge_price": r.get("hedge_price"),
-                "billing_notes": notes,
+                "address": address,
+                "hedge_price": hedge_price,
+                "billing_notes": " ".join(notes) or None,
+                "hedge_roster": True,
                 "entity_kind": "client",
             }
         )
-    # document-level notes as a synthetic association note on Julie Cameron if mentioned
     return out
 
 
@@ -189,7 +232,8 @@ def load_mailing_labels() -> dict[str, str]:
             by_key[_norm_key(name)] = addr
             # also surname-only
             if "," in name:
-                by_key[_norm_key(name.split(",")[0])] = addr
+                sk = _norm_key(name.split(",")[0])
+                by_key.setdefault(sk, addr)
             else:
                 parts = name.split()
                 if parts:
@@ -293,19 +337,11 @@ def _lookup(mapping: dict[str, str], name: str) -> str | None:
     k = _norm_key(name)
     if k in mapping:
         return mapping[k]
-    # try surname before comma
+    # try surname before comma (stored only when that surname was unused)
     if "," in name:
         k2 = _norm_key(name.split(",")[0])
         if k2 in mapping:
             return mapping[k2]
-    # try last token
-    parts = re.split(r"[\s,]+", name)
-    for p in reversed(parts):
-        if len(p) < 3:
-            continue
-        k3 = _norm_key(p)
-        if k3 in mapping:
-            return mapping[k3]
     return None
 
 
@@ -339,7 +375,7 @@ def merge_records() -> list[dict]:
 
     for r in load_cy2026():
         upsert(r)
-    for r in load_hedges_gold():
+    for r in load_hedges_office():
         upsert(r)
 
     order = load_work_order()
@@ -362,6 +398,7 @@ def merge_records() -> list[dict]:
         if g:
             rec["mowing_group"] = g
         rec.setdefault("entity_kind", _entity_kind(name))
+        rec.setdefault("hedge_roster", False)
 
     # Add any work-order-only names not in CY2026 (e.g. Heenahan, Shoemaker)
     path = TMP / "RevisedWorkCompleted.docx"
@@ -388,35 +425,121 @@ def merge_records() -> list[dict]:
     )
 
 
+def _same_person(a: str, b: str) -> bool:
+    ka, kb = _norm_key(a), _norm_key(b)
+    if not ka or not kb:
+        return False
+    if ka == kb:
+        return True
+    short, long = (ka, kb) if len(ka) <= len(kb) else (kb, ka)
+    return len(short) >= 8 and long.startswith(short)
+
+
 def main() -> None:
     db.init_db()
     records = merge_records()
-    print(f"parsed {len(records)} knowledge rows")
+    print(f"parsed {len(records)} knowledge rows from office files")
+    hedges = [r for r in records if r.get("hedge_roster")]
+    print(f"hedges roster from template: {len(hedges)}")
+    for r in hedges:
+        print(
+            f"  hedge {r['name']}: price={r.get('hedge_price')} "
+            f"notes={r.get('billing_notes')!r}"
+        )
     with db.connect() as conn:
-        n = 0
+        existing = db.list_clients(conn)
+        used: set[int] = set()
+
+        def find_client(name: str) -> dict | None:
+            exact = [
+                row
+                for row in existing
+                if int(row["id"]) not in used
+                and _norm_key(row["name"]) == _norm_key(name)
+            ]
+            if exact:
+                return exact[0]
+            pref = [
+                row
+                for row in existing
+                if int(row["id"]) not in used and _same_person(row["name"], name)
+            ]
+            return pref[0] if pref else None
+
         for r in records:
+            match = find_client(r["name"])
+            if match is None:
+                cid = db.upsert_client(
+                    conn,
+                    name=r["name"],
+                    email=r.get("email"),
+                    phone=r.get("phone"),
+                    address=r.get("address"),
+                    billing_address=r.get("billing_address"),
+                    billing_notes=r.get("billing_notes"),
+                    mow_price=r.get("mow_price"),
+                    hedge_price=r.get("hedge_price"),
+                    hedge_roster=bool(r.get("hedge_roster")),
+                    prefer_mail=r.get("prefer_mail"),
+                    entity_kind=r.get("entity_kind"),
+                    sort_order=r.get("sort_order"),
+                    mowing_group=r.get("mowing_group"),
+                )
+                used.add(cid)
+                continue
+            used.add(int(match["id"]))
             db.upsert_client(
                 conn,
-                name=r["name"],
+                name=match["name"],
                 email=r.get("email"),
                 phone=r.get("phone"),
                 address=r.get("address"),
                 billing_address=r.get("billing_address"),
-                billing_notes=r.get("billing_notes"),
                 mow_price=r.get("mow_price"),
-                hedge_price=r.get("hedge_price"),
                 prefer_mail=r.get("prefer_mail"),
                 entity_kind=r.get("entity_kind"),
                 sort_order=r.get("sort_order"),
                 mowing_group=r.get("mowing_group"),
             )
-            n += 1
+            office_name = None
+            if _norm_key(r["name"]) != _norm_key(match["name"]):
+                taken = any(
+                    _norm_key(row["name"]) == _norm_key(r["name"]) for row in existing
+                )
+                if not taken:
+                    office_name = r["name"]
+            db.write_office_knowledge(
+                conn,
+                int(match["id"]),
+                name=office_name,
+                billing_notes=r.get("billing_notes"),
+                hedge_price=r.get("hedge_price") if r.get("hedge_roster") else None,
+                hedge_roster=bool(r.get("hedge_roster")),
+            )
+        for row in existing:
+            if int(row["id"]) in used:
+                continue
+            notes = row.get("billing_notes") or ""
+            low = notes.lower()
+            if any(p in low for p in ("handwritten row", "crossed out", "printed $")):
+                notes = None
+            db.write_office_knowledge(
+                conn,
+                int(row["id"]),
+                billing_notes=notes or None,
+                hedge_price=None,
+                hedge_roster=False,
+            )
+            print(f"left in place (not in office files): {row['name']}")
         total = conn.execute("SELECT count(*) AS n FROM clients").fetchone()["n"]
         with_mow = conn.execute(
             "SELECT count(*) AS n FROM clients WHERE mow_price IS NOT NULL"
         ).fetchone()["n"]
         with_hedge = conn.execute(
             "SELECT count(*) AS n FROM clients WHERE hedge_price IS NOT NULL"
+        ).fetchone()["n"]
+        on_roster = conn.execute(
+            "SELECT count(*) AS n FROM clients WHERE hedge_roster"
         ).fetchone()["n"]
         with_phone = conn.execute(
             "SELECT count(*) AS n FROM clients WHERE phone IS NOT NULL"
@@ -425,7 +548,8 @@ def main() -> None:
             "SELECT count(*) AS n FROM clients WHERE billing_address IS NOT NULL"
         ).fetchone()["n"]
     print(
-        f"upserted {n}; total={total} mow={with_mow} hedge={with_hedge} "
+        f"upserted office rows={len(records)}; total={total} mow={with_mow} "
+        f"hedge_price={with_hedge} hedge_roster={on_roster} "
         f"phone={with_phone} billing_addr={with_bill}"
     )
 

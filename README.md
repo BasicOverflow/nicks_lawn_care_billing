@@ -118,9 +118,12 @@ App env: `SMTP_HOST`, `SMTP_PORT=587`, `SMTP_USER` / `SMTP_PASSWORD`, `SMTP_FROM
 
 Knowledge-guided parallel OCR: the full photo is sent many times in parallel;
 each request asks the model for only a small chunk of Postgres-known clients
-(default 4 names per request). No tile/crop splitting.
+(default 4 names per request). A follow-up pass then uses that extract to
+fill missing names and blank price or date cells. No tile/crop splitting.
 
-Seed the knowledgebase from Nick’s paper templates first:
+Seed the knowledge base from Nick’s office files (spreadsheet, hedges list, phones,
+mailing labels). Gold JSON under `ground_truth/` is for scoring tests only and
+is not imported.
 
 ```powershell
 py -3 scripts\import_tmp_knowledge.py
@@ -137,6 +140,3 @@ ocr.unload_model()
 Model id is fixed: `qwen25-vl-3b`. Chunk size: `NINI_OCR_CHUNK` (default 4).
 Legacy tile multipass: `ocr.extract_sheet_legacy_multipass(...)`.
 
-## Out of scope
-
-Multi-user auth, K8s Helm, WeVisDoc ensemble, gold OCR benches, cloud SMTP (Brevo etc.).

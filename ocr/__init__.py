@@ -59,9 +59,12 @@ def extract_sheet(
     model_id: str | None = None,
     model_cfg: dict | None = None,
 ) -> dict:
-    """Knowledge-guided OCR: parallel full-image chunks (no tile/crop split).
+    """Knowledge-guided OCR: parallel full-image chunks, then a gap pass.
 
-    ``max_passes`` is accepted for API compatibility; guided mode does not use it.
+    The first wave asks for a few Postgres clients at a time. A later pass
+    sees the rows already extracted and reads any still-missing names or
+    blank price/date cells from the same photo. ``max_passes`` is unused;
+    the gap loop stops at two rounds.
     """
     _ = max_passes
     _ensure_env()

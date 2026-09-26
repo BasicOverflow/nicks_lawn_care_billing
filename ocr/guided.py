@@ -19,7 +19,9 @@ from .jsonutil import try_parse_json
 from .pipeline import fill_stats, merge_extracts, prefer_sheet_tables, _as_obj
 from .prompts import (
     TABLE_JSON_SCHEMA,
+    TRANSCRIBE,
     guided_chunk_prompt,
+    guided_gap_prompt,
     guided_header_prompt,
     guided_notes_prompt,
     guided_price_prompt,
@@ -113,6 +115,11 @@ def headers_look_valid(cols: list[str]) -> bool:
 def _columns_for_kind(sheet_kind: str, detected: list[str] | None) -> list[str]:
     canon = canonical_columns(sheet_kind)
     if detected and headers_look_valid(detected):
+        kind = (sheet_kind or "").lower()
+        if kind in ("mowing", "hedges"):
+            roles = {_col_role(c) for c in detected}
+            if "address" not in roles:
+                return canon
         return detected
     return canon
 
@@ -228,36 +235,23 @@ def _price_reread_names(
     columns: list[str],
     sheet_kind: str,
 ) -> list[dict]:
-    """Blank prices, neighbor copies, or a street written in the price column."""
+    """Blank prices, or a street written in the price column.
+
+    Equal prices on neighboring rows are normal on these lists, so they are
+    left alone. Re-asking them was overwriting a correct first read.
+    """
     pi = _price_index(columns, sheet_kind)
     if pi < 0:
         return []
     addr_i = _address_index(columns)
     table, rows = _primary_rows(merged)
     targets: list[str] = []
-    amounts: list[float | None] = []
     for row in rows:
-        raw = str(row[pi]).strip() if row and pi < len(row) else ""
-        amounts.append(_money(raw) if raw and _is_dollar_amount(raw) else None)
-    for i, row in enumerate(rows):
         if not row or not str(row[0]).strip():
             continue
         if _price_cell_bad(row, pi, addr_i):
             if table is not None and pi < len(row):
                 row[pi] = ""
-            targets.append(str(row[0]))
-            continue
-        read = amounts[i]
-        prev = amounts[i - 1] if i else None
-        nxt = amounts[i + 1] if i + 1 < len(amounts) else None
-        copied = (
-            read is not None
-            and (
-                (prev is not None and abs(read - prev) < 0.01)
-                or (nxt is not None and abs(read - nxt) < 0.01)
-            )
-        )
-        if copied:
             targets.append(str(row[0]))
     seen: set[str] = set()
     ordered = []
@@ -297,6 +291,181 @@ def _apply_prices(merged: dict, price_obj: dict, columns: list[str], sheet_kind:
         while len(row) <= pi:
             row.append("")
         row[pi] = price
+
+
+def _value_index(columns: list[str], sheet_kind: str) -> int:
+    kind = (sheet_kind or "").lower()
+    if kind in ("work", "work_completed"):
+        for i, col in enumerate(columns):
+            if _col_role(col) == "work":
+                return i
+        return 1 if len(columns) > 1 else -1
+    return _price_index(columns, sheet_kind)
+
+
+def _gap_targets(
+    merged: dict,
+    records: list[dict],
+    columns: list[str],
+    sheet_kind: str,
+) -> tuple[list[str], list[dict], list[str]]:
+    """Names already extracted, known names with no row, and rows with an empty value cell."""
+    _table, rows = _primary_rows(merged)
+    extracted: list[str] = []
+    have: set[str] = set()
+    blank: list[str] = []
+    vi = _value_index(columns, sheet_kind)
+    price_sheet = (sheet_kind or "").lower() not in ("work", "work_completed")
+    for row in rows:
+        if not row or not str(row[0]).strip():
+            continue
+        name = str(row[0]).strip()
+        key = _name_key(name)
+        if key in have:
+            continue
+        have.add(key)
+        extracted.append(name)
+        raw = str(row[vi]).strip() if 0 <= vi < len(row) else ""
+        if price_sheet:
+            if not _is_dollar_amount(raw):
+                blank.append(name)
+        elif not raw:
+            blank.append(name)
+    missing = []
+    for rec in records:
+        key = _name_key(str(rec.get("name") or ""))
+        if key and key not in have:
+            missing.append(rec)
+    return extracted, missing, blank
+
+
+def _apply_gap_rows(merged: dict, extra: dict, columns: list[str], sheet_kind: str) -> tuple[int, int]:
+    """Append names we did not have, and fill only empty value cells on names we did."""
+    table, rows = _primary_rows(merged)
+    if table is None:
+        merged.setdefault("tables", []).append(
+            {"caption": None, "columns": list(columns), "rows": []}
+        )
+        table = merged["tables"][-1]
+        rows = table["rows"]
+    dest_roles = [_col_role(c) for c in (table.get("columns") or columns)]
+    by_key: dict[str, list] = {}
+    for row in rows:
+        if row and str(row[0]).strip():
+            by_key.setdefault(_name_key(str(row[0])), row)
+    vi = _value_index(columns, sheet_kind)
+    price_sheet = (sheet_kind or "").lower() not in ("work", "work_completed")
+    added = 0
+    filled = 0
+    width = len(dest_roles)
+    for t in extra.get("tables") or []:
+        if not isinstance(t, dict):
+            continue
+        src_roles = [_col_role(str(c)) for c in (t.get("columns") or columns)]
+        for row in t.get("rows") or []:
+            if not isinstance(row, list) or not row or not str(row[0]).strip():
+                continue
+            by_role: dict[str, str] = {}
+            for i, cell in enumerate(row):
+                role = src_roles[i] if i < len(src_roles) else ""
+                if role and role not in by_role:
+                    by_role[role] = str(cell)
+            if "name" not in by_role:
+                by_role["name"] = str(row[0])
+            name = by_role["name"].strip()
+            key = _name_key(name)
+            if not key:
+                continue
+            existing = by_key.get(key)
+            if existing is None:
+                cells = []
+                for role in dest_roles:
+                    cells.append(name if role == "name" else by_role.get(role, ""))
+                if len(cells) < width:
+                    cells += [""] * (width - len(cells))
+                cells = cells[:width]
+                table.setdefault("rows", []).append(cells)
+                by_key[key] = cells
+                added += 1
+                continue
+            if vi < 0 or vi >= len(existing):
+                continue
+            current = str(existing[vi]).strip()
+            incoming_role = "price" if price_sheet else "work"
+            incoming = (by_role.get(incoming_role) or "").strip()
+            if price_sheet and not _is_dollar_amount(incoming):
+                continue
+            if not incoming:
+                continue
+            if price_sheet and _is_dollar_amount(current):
+                continue
+            if not price_sheet and current:
+                continue
+            while len(existing) <= vi:
+                existing.append("")
+            existing[vi] = incoming
+            filled += 1
+    return added, filled
+
+
+def _col_role(name: str) -> str:
+    c = (name or "").lower()
+    if any(k in c for k in ("contact", "client", "name")):
+        return "name"
+    if any(k in c for k in ("price", "hedge", "lawn", "amount")):
+        return "price"
+    if any(k in c for k in ("date", "work", "day")):
+        return "work"
+    if "note" in c or "billing" in c:
+        return "notes"
+    if "address" in c:
+        return "address"
+    return ""
+
+
+def _append_by_role(merged: dict, extra: dict, columns: list[str]) -> int:
+    """Add rows from a full-page read, lining cells up by column role."""
+    table, rows = _primary_rows(merged)
+    if table is None:
+        merged.setdefault("tables", []).append(
+            {"caption": None, "columns": list(columns), "rows": []}
+        )
+        table = merged["tables"][-1]
+        rows = table["rows"]
+    dest_roles = [_col_role(c) for c in (table.get("columns") or columns)]
+    have = {_name_key(str(r[0])) for r in rows if r and str(r[0]).strip()}
+    added = 0
+    width = len(dest_roles)
+    for t in extra.get("tables") or []:
+        if not isinstance(t, dict):
+            continue
+        src_roles = [_col_role(str(c)) for c in (t.get("columns") or [])]
+        for row in t.get("rows") or []:
+            if not isinstance(row, list) or not row:
+                continue
+            by_role: dict[str, str] = {}
+            for i, cell in enumerate(row):
+                role = src_roles[i] if i < len(src_roles) else ""
+                if role and role not in by_role:
+                    by_role[role] = str(cell)
+            if not by_role.get("name") and row:
+                by_role["name"] = str(row[0])
+            name = (by_role.get("name") or "").strip()
+            key = _name_key(name)
+            if not key or key in have:
+                continue
+            cells = []
+            for role in dest_roles:
+                if role == "name":
+                    cells.append(name)
+                else:
+                    cells.append(by_role.get(role, ""))
+            if len(cells) < width:
+                cells += [""] * (width - len(cells))
+            table.setdefault("rows", []).append(cells[:width])
+            have.add(key)
+            added += 1
+    return added
 
 
 def _append_unknown_rows(merged: dict, extra: dict, columns: list[str]) -> int:
@@ -400,8 +569,6 @@ def extract_guided(
     if not records:
         # Fallback: one unguided full-page pull if knowledge is empty
         print(f"  {prefix} no knowledge — single full-page transcribe", flush=True)
-        from .prompts import TRANSCRIBE
-
         try:
             obj = _vision(model_id, cfg, page, TRANSCRIBE)
         except Exception as e:
@@ -540,9 +707,25 @@ def extract_guided(
                 n_reread += 1
         hist.append({"pass": "price-reread", "groups": len(price_groups), "rows": len(reread)})
 
-    # 3) Contacts on the sheet who are not in the knowledge roster
+    # Contacts on the sheet who are not in the knowledge roster.
+    # A page that matches only a handful of known names is mostly people the
+    # roster does not list. Read the whole table once; that is the same call
+    # an upload can make.
     raise_if_cancelled()
     n_unknown = 0
+    if len(records) < 8 and len(all_records) >= 15:
+        print(
+            f"  {prefix} few roster names on page — reading the whole table",
+            flush=True,
+        )
+        try:
+            full = _vision(model_id, cfg, page, TRANSCRIBE)
+            n_full = _append_by_role(merged, full, columns)
+            n_unknown += n_full
+            print(f"  {prefix} whole-table rows added: {n_full}", flush=True)
+            hist.append({"pass": "sparse-page", "rows": n_full})
+        except Exception as e:
+            print(f"  {prefix} whole-table read fail: {e}", flush=True)
     try:
         extra = _vision(
             model_id,
@@ -562,6 +745,78 @@ def extract_guided(
     except Exception as e:
         print(f"  {prefix} unknown pass fail: {e}", flush=True)
 
+    gap_added = 0
+    gap_filled = 0
+    for gap_i in range(1, 3):
+        raise_if_cancelled()
+        extracted, missing, blank = _gap_targets(merged, records, columns, sheet_kind)
+        if gap_i > 1 and not missing and not blank:
+            break
+        print(
+            f"  {prefix} gap pass {gap_i}: extracted={len(extracted)} "
+            f"missing={len(missing)} blank={len(blank)}",
+            flush=True,
+        )
+        targets: list[tuple[list, list[str], bool]] = []
+        for group in _chunks(missing, chunk_size):
+            targets.append((group, [], False))
+        for group in _chunks(blank, chunk_size):
+            targets.append(([], group, False))
+        if gap_i == 1:
+            targets.append(([], [], True))
+
+        def _gap_one(item: tuple[list, list[str], bool]) -> dict:
+            raise_if_cancelled()
+            miss, blanks, others = item
+            return _vision(
+                model_id,
+                cfg,
+                page,
+                guided_gap_prompt(
+                    miss,
+                    blanks,
+                    extracted,
+                    columns=columns,
+                    sheet_kind=sheet_kind,
+                    title=header.get("title"),
+                    ask_others=others,
+                ),
+            )
+
+        round_added = 0
+        round_filled = 0
+        if targets:
+            with ThreadPoolExecutor(max_workers=max(1, min(workers, len(targets)))) as pool:
+                futs = [pool.submit(_gap_one, item) for item in targets]
+                for fut in as_completed(futs):
+                    try:
+                        got = fut.result()
+                    except InferenceCancelled:
+                        raise
+                    except Exception as e:
+                        print(f"  {prefix} gap pass {gap_i} fail: {e}", flush=True)
+                        continue
+                    added, filled = _apply_gap_rows(merged, got, columns, sheet_kind)
+                    round_added += added
+                    round_filled += filled
+        gap_added += round_added
+        gap_filled += round_filled
+        hist.append(
+            {
+                "pass": f"gap-{gap_i}",
+                "missing": len(missing),
+                "blank": len(blank),
+                "added": round_added,
+                "filled": round_filled,
+            }
+        )
+        print(
+            f"  {prefix} gap pass {gap_i}: added={round_added} filled={round_filled}",
+            flush=True,
+        )
+        if round_added == 0 and round_filled == 0:
+            break
+
     st = fill_stats(merged)
     elapsed = round(time.time() - t0, 2)
     print(
@@ -576,6 +831,8 @@ def extract_guided(
         "names_on_page": len(records),
         "price_reread": len(reread),
         "unknown_added": n_unknown,
+        "gap_added": gap_added,
+        "gap_filled": gap_filled,
         "sheet_kind": sheet_kind,
         "passes": hist,
         "novel": novel_mode(),

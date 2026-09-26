@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS clients (
   billing_notes TEXT,
   mow_price NUMERIC,
   hedge_price NUMERIC,
+  hedge_roster BOOLEAN NOT NULL DEFAULT FALSE,
   prefer_mail BOOLEAN NOT NULL DEFAULT FALSE,
   entity_kind TEXT NOT NULL DEFAULT 'client',
   sort_order INTEGER,
@@ -71,6 +72,7 @@ _MIGRATIONS = (
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS entity_kind TEXT NOT NULL DEFAULT 'client'",
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS sort_order INTEGER",
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS mowing_group TEXT",
+    "ALTER TABLE clients ADD COLUMN IF NOT EXISTS hedge_roster BOOLEAN NOT NULL DEFAULT FALSE",
 )
 
 
@@ -109,6 +111,7 @@ def upsert_client(
     billing_notes=None,
     mow_price=None,
     hedge_price=None,
+    hedge_roster=None,
     prefer_mail=None,
     entity_kind=None,
     sort_order=None,
@@ -126,6 +129,7 @@ def upsert_client(
               billing_notes = COALESCE(%s, billing_notes),
               mow_price = COALESCE(%s, mow_price),
               hedge_price = COALESCE(%s, hedge_price),
+              hedge_roster = COALESCE(%s, hedge_roster),
               prefer_mail = COALESCE(%s, prefer_mail),
               entity_kind = COALESCE(%s, entity_kind),
               sort_order = COALESCE(%s, sort_order),
@@ -141,6 +145,7 @@ def upsert_client(
                 billing_notes,
                 mow_price,
                 hedge_price,
+                hedge_roster,
                 prefer_mail,
                 entity_kind,
                 sort_order,
@@ -153,9 +158,9 @@ def upsert_client(
         """
         INSERT INTO clients (
           name, email, phone, address, billing_address, billing_notes,
-          mow_price, hedge_price, prefer_mail, entity_kind, sort_order, mowing_group
+          mow_price, hedge_price, hedge_roster, prefer_mail, entity_kind, sort_order, mowing_group
         )
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
         """,
         (
             name,
@@ -166,6 +171,7 @@ def upsert_client(
             billing_notes,
             mow_price,
             hedge_price,
+            bool(hedge_roster) if hedge_roster is not None else False,
             bool(prefer_mail) if prefer_mail is not None else False,
             entity_kind or "client",
             sort_order,
@@ -180,6 +186,34 @@ def get_client_by_name(conn, name: str) -> dict | None:
         "SELECT * FROM clients WHERE lower(trim(name)) = lower(trim(%s))",
         (name,),
     ).fetchone()
+
+
+def write_office_knowledge(
+    conn,
+    client_id: int,
+    *,
+    name: str | None = None,
+    billing_notes: str | None = None,
+    hedge_price: float | None = None,
+    hedge_roster: bool = False,
+) -> None:
+    """Overwrite fields the office import owns. NULL clears a previous value.
+
+    upsert_client uses COALESCE, which would leave a ground-truth hedge price
+    in place. This path is the one the seeder uses for those columns.
+    """
+    conn.execute(
+        """
+        UPDATE clients SET
+          name = COALESCE(%s, name),
+          billing_notes = %s,
+          hedge_price = %s,
+          hedge_roster = %s,
+          updated_at = NOW()
+        WHERE id = %s
+        """,
+        (name, billing_notes, hedge_price, bool(hedge_roster), client_id),
+    )
 
 
 def list_clients(conn) -> list[dict]:
@@ -224,10 +258,7 @@ def knowledge_records_for_sheet(conn, sheet_kind: str = "mowing") -> list[dict]:
     if kind == "hedges":
         where = """
             WHERE name NOT ILIKE '%%smoke%%'
-              AND (
-                hedge_price IS NOT NULL
-                OR lower(coalesce(billing_notes, '')) LIKE '%%hedge%%'
-              )
+              AND (hedge_roster OR hedge_price IS NOT NULL)
         """
     elif kind in ("work", "work_completed", "other"):
         where = " WHERE name NOT ILIKE '%%smoke%%' "
