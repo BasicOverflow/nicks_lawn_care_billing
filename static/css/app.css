@@ -81,7 +81,7 @@ main {
   max-width: none;
   width: 100%;
   margin: 0;
-  padding: .5rem 15% 2.5rem;
+  padding: .5rem 25% 2.5rem;
 }
 h1 { font-size: 1.35rem; margin: 0 0 .35rem; }
 .hint { color: var(--muted); font-size: .92rem; margin: 0 0 1rem; }
@@ -395,7 +395,7 @@ td.row-tools { width: 1%; white-space: nowrap; }
 }
 @media (max-width: 640px) {
   .top { padding: .5rem .35rem; }
-  main { padding: .45rem 15% 2rem; }
+  main { padding: .45rem 25% 2rem; }
   table { display: block; overflow-x: auto; }
   .pdf-frame { height: 60vh; min-height: 320px; }
 }
