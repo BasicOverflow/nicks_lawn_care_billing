@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Data — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=16"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=17"/>
 </head>
 <body>
 <header class="top">
@@ -33,7 +33,7 @@
   <section class="card" id="rosterCard">
     <h2>Clients</h2>
     <p class="hint">Mowing prices, hedge prices, and contact details.</p>
-    <button type="button" id="btnToggleClients" class="secondary">Edit clients</button>
+    <button type="button" id="btnToggleClients" class="secondary">View/edit clients list</button>
     <div id="clientPanel" hidden>
       <p class="hint">A blank price clears that price. Save writes every row, including ones hidden by the search.</p>
       <label for="clientFilter">Find a client</label>
@@ -914,7 +914,8 @@ let clientsOpen = false;
 function setClientsOpen(open) {
   clientsOpen = open;
   el("clientPanel").hidden = !open;
-  el("btnToggleClients").textContent = open ? "Hide clients" : "Edit clients";
+  el("btnToggleClients").textContent = open ? "Hide clients list" : "View/edit clients list";
+  document.querySelector("main.split-data").classList.toggle("clients-open", open);
   if (open && !clientsLoaded) {
     clientsLoaded = true;
     loadClients();
@@ -922,7 +923,6 @@ function setClientsOpen(open) {
 }
 
 el("btnToggleClients").onclick = () => setClientsOpen(!clientsOpen);
-setClientsOpen(true);
 el("clientFilter").addEventListener("input", filterClients);
 el("btnAddClient").onclick = () => {
   addClientRow({});
