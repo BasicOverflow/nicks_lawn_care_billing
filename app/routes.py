@@ -10,6 +10,7 @@ import inspect
 import json
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
@@ -116,9 +117,10 @@ async def upload(
     """Queue work-completed photos for knowledge-guided OCR.
 
     Mowing prices and hedge prices are typed on the Data page, not photographed.
-    Files are saved under `uploads/{job_id}/`, then read by Qwen. If another
-    batch is already running, this one waits. Poll `GET /api/progress` for the
-    merged tables. Confirm with `POST /api/jobs/{job_id}/commit`.
+    Files are saved under `uploads/{job_id}/`. Photos in this batch are read
+    together. If another batch is already running, this one waits. Poll
+    `GET /api/progress` for the merged tables. Confirm with
+    `POST /api/jobs/{job_id}/commit`.
     """
     del sheet_kind
     sheet_kind = "work"
@@ -173,22 +175,44 @@ async def upload(
 
             jobs.set_progress(
                 percent=10,
-                message="Running OCR (knowledge-guided parallel)…",
+                message=f"Reading {n} photo{'s' if n != 1 else ''} at the same time…",
             )
             with db.connect() as conn:
                 knowledge_records = db.knowledge_records_for_sheet(conn, item.sheet_kind)
             merged = {"title": None, "tables": [], "notes": [], "complete": False}
-            for i, p in enumerate(item.paths):
+            seqs = int((ocr.MODEL_CFG.get("vllm_kwargs") or {}).get("max_num_seqs") or 4)
+            slots = max(1, min(n, seqs))
+            per_photo = max(1, seqs // slots)
+
+            def _one(index: int, path: Path):
                 raise_if_cancelled()
-                jobs.set_progress(
-                    percent=10 + int(80 * i / max(n, 1)),
-                    message=f"OCR {p.name} ({i+1}/{n}, {len(knowledge_records)} kb)…",
-                )
-                part = ocr.extract_sheet(
-                    p,
+                return index, ocr.extract_sheet(
+                    path,
                     sheet_kind=item.sheet_kind,
                     knowledge_records=knowledge_records,
+                    wave_workers=per_photo,
                 )
+
+            parts: list[dict | None] = [None] * n
+            with ThreadPoolExecutor(max_workers=slots) as pool:
+                futures = [pool.submit(_one, i, p) for i, p in enumerate(item.paths)]
+                finished = 0
+                try:
+                    for fut in as_completed(futures):
+                        index, part = fut.result()
+                        parts[index] = part
+                        finished += 1
+                        jobs.set_progress(
+                            percent=10 + int(80 * finished / max(n, 1)),
+                            message=f"OCR {finished}/{n} photos finished…",
+                        )
+                except Exception:
+                    for fut in futures:
+                        fut.cancel()
+                    raise
+            for part in parts:
+                if not part:
+                    continue
                 merged["tables"].extend(part.get("tables") or [])
                 merged["notes"].extend(part.get("notes") or [])
                 if part.get("title") and not merged.get("title"):

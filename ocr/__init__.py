@@ -56,6 +56,7 @@ def extract_sheet(
     knowledge_names: list[str] | None = None,
     knowledge_records: list[dict] | None = None,
     chunk_size: int | None = None,
+    wave_workers: int | None = None,
     model_id: str | None = None,
     model_cfg: dict | None = None,
 ) -> dict:
@@ -92,6 +93,7 @@ def extract_sheet(
         knowledge_records=records,
         sheet_kind=sheet_kind,
         chunk_size=chunk_size or GUIDED_CHUNK_SIZE,
+        wave_workers=wave_workers,
         fx_id=path.stem,
     )
     obj.pop("_guided_meta", None)
