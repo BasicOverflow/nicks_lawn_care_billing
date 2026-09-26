@@ -99,7 +99,7 @@ def confirm_extract(
             else:
                 desc = str(mark["name"])
                 amount = float(mark["amount"])
-                day = None
+                day = str(mark["day"]) if mark.get("day") else None
             db.add_work_item(
                 conn,
                 client_id=cid,

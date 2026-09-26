@@ -31,5 +31,14 @@ TMP_DIR = ROOT / ".tmp"
 TMP_DIR.mkdir(exist_ok=True)
 
 COMPANY_NAME = os.environ.get("COMPANY_NAME", "Nick's Lawn Care LLC")
+OWNER_NAME = os.environ.get("OWNER_NAME", "Nicholas Filip")
+COMPANY_ADDRESS = os.environ.get("COMPANY_ADDRESS", "6 Casean Ct - Waterford, Ct. 06385")
+COMPANY_PHONE = os.environ.get("COMPANY_PHONE", "860-865-9154")
+COMPANY_EMAIL = os.environ.get("COMPANY_EMAIL", "filipnicholas138@gmail.com")
+INVOICE_SIGNOFF = os.environ.get("INVOICE_SIGNOFF", "Nick")
+SERVICE_LINE = os.environ.get("SERVICE_LINE", "Serving Giants Neck Beach Association, only.")
+TAX_REGISTRATION = os.environ.get("TAX_REGISTRATION", "Tax Registration Number: 39-3748795")
+INSURED_LINE = os.environ.get("INSURED_LINE", "Insured")
 HOUR_RATE = float(os.environ.get("HOUR_RATE", "100"))
-CT_TAX_NOTE = "CT sales tax ~6.35% (apply as needed for taxable items)"
+CT_SALES_TAX_RATE = os.environ.get("CT_SALES_TAX_RATE", "0.0635")
+CT_TAX_NOTE = "CT sales tax 6.35% is added on each invoice."

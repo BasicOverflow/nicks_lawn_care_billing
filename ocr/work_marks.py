@@ -72,10 +72,17 @@ def parse_work_marks(text: str) -> list[dict]:
         name = re.sub(r"\s+", " ", match.group("name")).strip(" ;,|")
         if not name:
             continue
+        day = None
+        ahead = re.search(
+            r"(?<![\d.])([1-9]|[12]\d|3[01])\s*$",
+            raw[: match.start()],
+        )
+        if ahead:
+            day = int(ahead.group(1))
         jobs.append((
             match.start(),
             match.end(),
-            {"kind": "custom", "name": name, "amount": float(match.group("amt")), "day": None},
+            {"kind": "custom", "name": name, "amount": float(match.group("amt")), "day": day},
         ))
 
     def covered(start: int, end: int) -> bool:
