@@ -83,6 +83,15 @@ main {
   margin: 0;
   padding: .5rem 25% 2.5rem;
 }
+main.split-data {
+  display: grid;
+  grid-template-columns: minmax(18rem, 1fr) minmax(24rem, 1.4fr);
+  column-gap: 1.25rem;
+  align-items: start;
+  padding: .75rem 1.25rem 2.5rem;
+}
+main.split-data > .data-intro { grid-column: 1 / -1; }
+main.split-data > .data-col { min-width: 0; }
 h1 { font-size: 1.35rem; margin: 0 0 .35rem; }
 .hint { color: var(--muted); font-size: .92rem; margin: 0 0 1rem; }
 .card {
@@ -392,6 +401,9 @@ td.row-tools { width: 1%; white-space: nowrap; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+@media (max-width: 960px) {
+  main.split-data { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
   .top { padding: .5rem .35rem; }

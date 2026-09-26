@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Data — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=15"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=16"/>
 </head>
 <body>
 <header class="top">
@@ -23,13 +23,16 @@
     <span id="progressMsg"></span>
   </div>
 </header>
-<main>
-  <h1>Data</h1>
-  <p class="hint">Type mowing prices, hedge prices, and contact details. Photograph only the work-completed sheets.</p>
+<main class="split-data">
+  <div class="data-intro">
+    <h1>Data</h1>
+    <p class="hint">Type mowing prices, hedge prices, and contact details. Photograph only the work-completed sheets.</p>
+  </div>
 
+  <div class="data-col data-col-clients">
   <section class="card" id="rosterCard">
     <h2>Clients</h2>
-    <p class="hint">Mowing prices, hedge prices, and contact details. Open the list when you want to edit it.</p>
+    <p class="hint">Mowing prices, hedge prices, and contact details.</p>
     <button type="button" id="btnToggleClients" class="secondary">Edit clients</button>
     <div id="clientPanel" hidden>
       <p class="hint">A blank price clears that price. Save writes every row, including ones hidden by the search.</p>
@@ -43,7 +46,9 @@
       <p class="msg" id="clientMsg"></p>
     </div>
   </section>
+  </div>
 
+  <div class="data-col data-col-work">
   <section class="card">
     <h2>Work completed</h2>
     <p class="hint">Add photos of the work-completed sheet, then Upload &amp; OCR. You can stage another batch while one is still running.</p>
@@ -107,6 +112,7 @@
     </form>
     <p class="msg chat-status" id="chatMsg"></p>
   </section>
+  </div>
 </main>
 <script src="/static/js/app.js?v=11"></script>
 <script>
@@ -916,6 +922,7 @@ function setClientsOpen(open) {
 }
 
 el("btnToggleClients").onclick = () => setClientsOpen(!clientsOpen);
+setClientsOpen(true);
 el("clientFilter").addEventListener("input", filterClients);
 el("btnAddClient").onclick = () => {
   addClientRow({});
