@@ -197,7 +197,22 @@ td input.cell:focus, th input.cell:focus {
 }
 td.row-tools { width: 1%; white-space: nowrap; }
 .table-scroll { overflow-x: auto; }
-#clientWrap input.cell[type="number"] { min-width: 4.5rem; }
+#clientWrap input.cell[type="number"] {
+  width: 3.1rem;
+  min-width: 3.1rem;
+  padding: .35rem .25rem;
+}
+#clientWrap th.price, #clientWrap td.price { width: 3.1rem; padding-left: .25rem; padding-right: .25rem; }
+#clientWrap th.notes, #clientWrap td.notes { width: 8rem; max-width: 9rem; }
+#clientWrap textarea.cell.notes {
+  min-height: 2.2rem;
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+}
 .msg { margin-top: .5rem; font-size: .9rem; }
 .msg.err { color: var(--err); }
 .msg.ok { color: var(--accent); }

@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Data — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=21"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=22"/>
 </head>
 <body>
 <header class="top">
@@ -794,10 +794,11 @@ document.querySelectorAll("[data-suggest]").forEach(btn => {
 });
 
 function clientField(name, value, type) {
-  const input = document.createElement("input");
-  input.className = "cell";
+  const input = type === "notes" ? document.createElement("textarea") : document.createElement("input");
+  input.className = type === "notes" ? "cell notes" : "cell";
   input.dataset.field = name;
-  input.type = type;
+  if (type === "notes") input.rows = 2;
+  else input.type = type;
   if (type === "number") {
     input.step = "0.01";
     input.inputMode = "decimal";
@@ -817,10 +818,12 @@ function addClientRow(client) {
     ["hedge_price", c.hedge_price ?? "", "number"],
     ["phone", c.phone || "", "text"],
     ["email", c.email || "", "text"],
-    ["notes", c.billing_notes || "", "text"],
+    ["notes", c.billing_notes || "", "notes"],
   ];
   fields.forEach(([name, value, type]) => {
     const td = document.createElement("td");
+    if (name === "mow_price" || name === "hedge_price") td.className = "price";
+    if (name === "notes") td.className = "notes";
     td.appendChild(clientField(name, value, type));
     tr.appendChild(td);
   });
@@ -850,8 +853,8 @@ function renderClients(clients) {
   wrap.innerHTML = "";
   const table = document.createElement("table");
   table.innerHTML = `<thead><tr>
-    <th>Name</th><th>Address</th><th>Mow</th><th>Hedge</th>
-    <th>Phone</th><th>Email</th><th>Notes</th><th>Mail</th><th></th>
+    <th>Name</th><th>Address</th><th class="price">Mow</th><th class="price">Hedge</th>
+    <th>Phone</th><th>Email</th><th class="notes">Notes</th><th>Mail</th><th></th>
   </tr></thead>`;
   const body = document.createElement("tbody");
   body.id = "clientBody";
