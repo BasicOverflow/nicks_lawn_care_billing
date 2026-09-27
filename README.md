@@ -24,7 +24,7 @@ requirements.txt
 
 ## Pages
 
-- **Data** (`/data`) — upload photos → OCR → review / one-shot correction → conflict check → confirm into knowledge for a month.
+- **Data** (`/data`) — type mow/hedge prices and contacts; photograph work-completed sheets → review → **Send to datastore**. **Clear review** drops the tables without saving. Chat can query or update stored data.
 - **Billing** (`/billing`) — generate PDFs → download zip / tax TSV → **Email all** via SMTP.
 - Header: model status, **Load model**, global progress bar.
 
@@ -51,7 +51,7 @@ py -3 run.py                    # http://127.0.0.1:8787
 ```
 
 1. Open **Data** → **Load model** (waits for Serve).
-2. Upload a sheet for month `YYYY-MM` → review → Confirm.
+2. Upload a work-completed sheet (month defaults to the current month) → review → **Send to datastore**.
 3. **Billing** → Generate PDFs → Download zip. Email all when SMTP is configured.
 
 ## Docker Compose
@@ -138,7 +138,6 @@ py -3 scripts\import_tmp_knowledge.py
 import ocr
 ocr.load_model()
 sheet = ocr.extract_sheet("photo.jpg", sheet_kind="work")
-fixed = ocr.apply_correction("photo.jpg", sheet, "Fix MOSHER price to $80")
 ocr.unload_model()
 ```
 
