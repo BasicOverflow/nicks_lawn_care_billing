@@ -1,15 +1,31 @@
-"""SMTP bill emailer (docker-mailserver / any SMTP)."""
+"""SMTP bill emailer (Gmail or any authenticated SMTP)."""
 
 from __future__ import annotations
 
+import re
 import smtplib
 from email.message import EmailMessage
 
 from . import config, db, storage
 
+_ADDRESS = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
+
 
 def smtp_configured() -> bool:
     return bool(config.SMTP_HOST and config.SMTP_FROM)
+
+
+def recipient_addresses(raw: str) -> list[str]:
+    """Every address in a client email field, in order, without duplicates."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _ADDRESS.findall(raw or ""):
+        key = match.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(match)
+    return found
 
 
 def send_pdf(*, to_addr: str, subject: str, body: str, pdf_bytes: bytes, filename: str) -> None:
@@ -42,14 +58,14 @@ def email_month_bills(conn, month: str, on_progress=None) -> dict:
     for i, b in enumerate(bills):
         if on_progress:
             on_progress(int(100 * i / total), f"Emailing {b['client_name']}…")
-        email = (b.get("email") or "").strip()
-        if not email or "@" not in email:
+        addresses = recipient_addresses(b.get("email") or "")
+        if not addresses:
             skipped.append(b["client_name"])
             continue
         try:
             pdf = storage.get_bytes(b["s3_key"])
             send_pdf(
-                to_addr=email,
+                to_addr=", ".join(addresses),
                 subject=f"{config.COMPANY_NAME} invoice — {month}",
                 body=f"Hi {b['client_name']},\n\nPlease find your invoice for {month} attached.\n\nThanks,\n{config.COMPANY_NAME}\n",
                 pdf_bytes=pdf,
