@@ -37,46 +37,96 @@ async function loadModel() {
   }
 }
 
-function setProgressUI(p) {
-  const msg = el("progressMsg");
-  const fill = el("progressFill");
-  const st = el("progressStatus");
-  if (msg) {
-    const q = p.queue_depth ? ` · queue ${p.queue_depth}` : "";
-    msg.textContent = (p.message || "") + q;
-  }
-  if (st) st.textContent = p.status || "idle";
-  if (fill) fill.style.width = `${p.percent || 0}%`;
-  if (typeof window.updateQueueMsg === "function") window.updateQueueMsg(p);
-  if ((p.ocr_busy || p.status === "running") && p.kind === "ocr") {
-    const c = el("btnCancelOcr");
-    const a = el("btnCancelAllOcr");
-    if (c) c.hidden = false;
-    if (a) a.hidden = false;
-  }
+const JOB_LABELS = {
+  model: "Model",
+  generate: "Bills",
+  email: "Email",
+  ocr: "OCR",
+  chat: "Chat",
+  upload: "Upload",
+};
+
+function progressJobs(p) {
+  if (Array.isArray(p.jobs)) return p.jobs.filter(job => job && job.job_id && job.status && job.status !== "idle");
+  if (p.job_id && p.status && p.status !== "idle") return [p];
+  return [];
 }
 
-let _lastDetail = null;
+function withQueue(job, p) {
+  return Object.assign({}, job, {
+    queue_depth: p.queue_depth,
+    queued: p.queued,
+    ocr_busy: p.ocr_busy,
+  });
+}
+
+function setProgressUI(p) {
+  const host = el("progressBars");
+  const jobs = progressJobs(p);
+  if (host) {
+    host.replaceChildren();
+    jobs.forEach(job => {
+      const bar = document.createElement("div");
+      bar.className = "progress-bar" + (job.status === "error" || job.status === "cancelled" ? " is-error" : "");
+      const kind = document.createElement("span");
+      kind.className = "progress-kind";
+      kind.textContent = JOB_LABELS[job.kind] || "Job";
+      const st = document.createElement("span");
+      st.className = "progress-status";
+      st.textContent = job.status || "";
+      const track = document.createElement("div");
+      track.className = "track";
+      const fill = document.createElement("div");
+      fill.className = "fill";
+      fill.style.width = `${job.percent || 0}%`;
+      track.appendChild(fill);
+      const msg = document.createElement("span");
+      msg.className = "progress-msg";
+      const queue = job.kind === "ocr" && p.queue_depth ? ` · queue ${p.queue_depth}` : "";
+      msg.textContent = (job.message || "") + queue;
+      bar.append(kind, st, track, msg);
+      host.appendChild(bar);
+    });
+  }
+  if (typeof window.updateQueueMsg === "function") window.updateQueueMsg(p);
+  const ocrLive = !!(p.ocr_busy || jobs.some(job => job.kind === "ocr" && job.status === "running"));
+  const c = el("btnCancelOcr");
+  const a = el("btnCancelAllOcr");
+  if (c) c.hidden = !ocrLive;
+  if (a) a.hidden = !ocrLive;
+  return jobs;
+}
+
+const _seenDone = new Set();
+const _seenProblem = new Set();
+window.claimJobDone = (job) => {
+  if (!job || !job.job_id || _seenDone.has(job.job_id)) return false;
+  _seenDone.add(job.job_id);
+  return true;
+};
 async function pollProgress() {
   try {
     const p = await api("/api/progress");
-    setProgressUI(p);
-    if (p.status === "done" && p.detail && JSON.stringify(p.detail) !== JSON.stringify(_lastDetail)) {
-      _lastDetail = p.detail;
-      if (typeof window.onJobDone === "function") window.onJobDone(p);
-    }
-    if ((p.status === "error" || p.status === "cancelled") && typeof window.onJobError === "function") {
-      const key = `${p.status}:${p.job_id}:${p.message}`;
-      if (key !== _lastDetail) {
-        _lastDetail = key;
-        window.onJobError(p);
+    const jobs = setProgressUI(p);
+    jobs.forEach(job => {
+      const tagged = withQueue(job, p);
+      if (job.status === "done" && window.claimJobDone(job) && typeof window.onJobDone === "function") {
+        window.onJobDone(tagged);
       }
-    }
-    window._ocrRunning = !!(p.ocr_busy || (p.status === "running" && p.kind === "ocr"));
+      if (job.status === "error" || job.status === "cancelled") {
+        const key = `${job.status}:${job.job_id}:${job.message}`;
+        if (!_seenProblem.has(key) && typeof window.onJobError === "function") {
+          _seenProblem.add(key);
+          window.onJobError(tagged);
+        }
+      }
+    });
+    const ocrLive = !!(p.ocr_busy || jobs.some(job => job.kind === "ocr" && job.status === "running"));
+    window._ocrRunning = ocrLive;
     refreshModel();
-    const ocrLive = p.ocr_busy || (p.status === "running" && p.kind === "ocr");
     if (ocrLive) window._sawOcr = true;
-    if (window._sawOcr && !ocrLive && p.status !== "done") {
+    if (jobs.some(job => job.kind === "ocr" && job.status !== "running")) window._sawOcr = false;
+    else if (window._sawOcr && !ocrLive) {
       const um = el("uploadMsg");
       if (um) {
         um.textContent = "OCR stopped before it finished. Submit the photos again.";

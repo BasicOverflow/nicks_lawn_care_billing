@@ -386,10 +386,16 @@ def work_for_month(conn, month: str) -> list[dict]:
 
 
 def months_with_work(conn) -> list[str]:
-    rows = conn.execute(
-        "SELECT DISTINCT month FROM work_items ORDER BY month DESC"
-    ).fetchall()
-    return [r["month"] for r in rows]
+    rows = conn.execute("SELECT DISTINCT month FROM work_items").fetchall()
+    months = [r["month"] for r in rows]
+
+    def calendar(month: str) -> bool:
+        parts = str(month).split("-")
+        return len(parts) == 2 and parts[0].isdigit() and len(parts[0]) == 4 and parts[1].isdigit()
+
+    dated = sorted((m for m in months if calendar(m)), reverse=True)
+    other = sorted(m for m in months if not calendar(m))
+    return dated + other
 
 
 def save_upload_job(conn, job_id: str, status: str, progress_msg: str = "",

@@ -44,6 +44,19 @@ a { color: var(--accent); }
   font-size: .9rem;
   color: var(--muted);
 }
+.progress-bars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem .7rem;
+  align-items: center;
+  flex: 1 1 18rem;
+}
+.progress-bar .progress-kind {
+  font-weight: 700;
+  color: var(--ink);
+}
+.progress-bar.is-error .fill { background: var(--err); }
+.progress-bar.is-error .progress-status { color: var(--err); }
 .progress-bar .track {
   width: 140px;
   height: 8px;

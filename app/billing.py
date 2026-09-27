@@ -56,16 +56,27 @@ def _first_name(name: str) -> str:
 
 
 def _invoice_when(month: str) -> tuple[str, str, int]:
-    """Letter date, work-month name, and work-month number."""
-    year_s, month_s = str(month).split("-", 1)
-    year, mon = int(year_s), int(month_s)
-    work = date(year, mon, 1)
-    if mon == 12:
-        issued = date(year + 1, 1, 1)
-    else:
-        issued = date(year, mon + 1, 1)
-    letter = f"{issued.strftime('%B')} {_ordinal(issued.day)}, {issued.year}"
-    return letter, work.strftime("%B"), mon
+    """Letter date, work-month name, and work-month number.
+
+    A YYYY-MM month is billed on the first of the next month. Any other label,
+    such as a test month, uses today's date and that label as the period.
+    """
+    raw = str(month or "").strip()
+    parts = raw.split("-", 1)
+    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+        year, mon = int(parts[0]), int(parts[1])
+        if 1 <= mon <= 12:
+            work = date(year, mon, 1)
+            if mon == 12:
+                issued = date(year + 1, 1, 1)
+            else:
+                issued = date(year, mon + 1, 1)
+            letter = f"{issued.strftime('%B')} {_ordinal(issued.day)}, {issued.year}"
+            return letter, work.strftime("%B"), mon
+    today = date.today()
+    letter = f"{today.strftime('%B')} {_ordinal(today.day)}, {today.year}"
+    label = raw.replace("_", " ") or "this period"
+    return letter, label, 0
 
 
 def _service(line: dict) -> tuple[str, int | None]:
@@ -114,7 +125,11 @@ def compile_invoice_lines(lines: list[dict], month: str) -> list[dict]:
     for row in groups:
         amount = row["amount"].quantize(_MONEY, rounding=ROUND_HALF_UP)
         subtotal += amount
-        dates = ", ".join(f"{month_num}/{day}" for day in sorted(row["days"]))
+        days = sorted(row["days"])
+        if month_num:
+            dates = ", ".join(f"{month_num}/{day}" for day in days)
+        else:
+            dates = ", ".join(str(day) for day in days)
         table.append({
             "date": dates,
             "description": row["description"],

@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Data — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=24"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=25"/>
 </head>
 <body>
 <header class="top">
@@ -17,11 +17,7 @@
     <span id="modelStatus">Model: …</span>
     <button type="button" id="btnLoadModel">Load model</button>
   </div>
-  <div class="progress-bar">
-    <span id="progressStatus">idle</span>
-    <div class="track"><div class="fill" id="progressFill"></div></div>
-    <span id="progressMsg"></span>
-  </div>
+  <div id="progressBars" class="progress-bars"></div>
 </header>
 <main class="split-data">
   <div class="data-intro">
@@ -114,7 +110,7 @@
   </section>
   </div>
 </main>
-<script src="/static/js/app.js?v=11"></script>
+<script src="/static/js/app.js?v=12"></script>
 <script>
 let currentJob = null;
 let currentExtract = null;

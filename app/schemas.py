@@ -125,10 +125,27 @@ class QueuedUpload(BaseModel):
     status: str = Field("", description="queued until the worker picks it up.")
 
 
-class ProgressView(BaseModel):
-    """Live status the UI polls while a background job runs."""
+class JobProgress(BaseModel):
+    """One background job. The header shows a bar for each of these."""
 
-    job_id: str = Field("", description="Id of the job in progress. Empty when nothing has run.")
+    job_id: str = Field("", description="Id returned when the job was accepted.")
+    kind: str = Field(
+        "",
+        description="upload, ocr, generate, email, model, or chat.",
+    )
+    status: str = Field("idle", description="idle, running, done, error, or cancelled.")
+    message: str = Field("", description="Short status line for this bar.")
+    percent: int = Field(0, description="0–100.")
+    detail: dict = Field(
+        default_factory=dict,
+        description="Job result. Shape depends on kind.",
+    )
+
+
+class ProgressView(BaseModel):
+    """Live status the UI polls while background jobs run."""
+
+    job_id: str = Field("", description="Id of the newest job. Empty when nothing has run.")
     kind: str = Field(
         "",
         description="upload, ocr, generate, email, model, or chat. Empty while idle.",
@@ -146,6 +163,10 @@ class ProgressView(BaseModel):
     queue_depth: int = Field(0, description="Upload batches still waiting.")
     queued: list[QueuedUpload] = Field(default_factory=list, description="Those waiting batches.")
     ocr_busy: bool = Field(False, description="True while a batch is running or one is queued.")
+    jobs: list[JobProgress] = Field(
+        default_factory=list,
+        description="Every job still running or just finished. One header bar each.",
+    )
 
 
 class ModelStatus(BaseModel):

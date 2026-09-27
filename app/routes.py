@@ -40,7 +40,9 @@ def progress():
     """Current background job, plus how many OCR batches are waiting.
 
     The UI polls this while a model deploy, OCR pass, chat reply,
-    bill generation, or email send is running. `status` is `idle`, `running`,
+    bill generation, or email send is running. `jobs` lists every one still
+    running or just finished, and the header draws a bar for each.
+    The top-level fields repeat the newest job. `status` is `idle`, `running`,
     `done`, `error`, or `cancelled`. `detail` holds the result when the job finishes.
     """
     return jobs.get()
@@ -70,6 +72,7 @@ def model_load():
     jid = jobs.new_job("model", "Deploying OCR model…")
 
     def run():
+        jobs.use(jid)
         try:
             import ocr
 
@@ -270,7 +273,9 @@ def upload_cancel(body: UploadCancel | None = None):
     body = body or UploadCancel()
     if body.all:
         result = ocr_queue.cancel_all()
-        jobs.set_progress(message="Cancelling OCR and clearing queue…")
+        ocr_id = jobs.running_id("ocr")
+        if ocr_id:
+            jobs.set_progress(job_id=ocr_id, message="Cancelling OCR and clearing queue…")
         return {"ok": True, **result, "message": "Cancel all signaled"}
 
     job_id = (body.job_id or "").strip() or None
@@ -278,7 +283,9 @@ def upload_cancel(body: UploadCancel | None = None):
         return {"ok": True, "cancelled": True, "job_id": job_id, "message": "Removed from queue"}
 
     result = ocr_queue.cancel_active(job_id)
-    jobs.set_progress(message="Cancelling OCR — aborting inference…")
+    ocr_id = job_id or jobs.running_id("ocr")
+    if ocr_id:
+        jobs.set_progress(job_id=ocr_id, message="Cancelling OCR — aborting inference…")
     return {
         "ok": True,
         "cancelled": result.get("signaled"),
@@ -471,6 +478,7 @@ async def chat(body: ChatRequest):
     jid = jobs.new_job("chat", "Thinking…")
 
     def run():
+        jobs.use(jid)
         try:
             with db.connect() as conn:
                 result = chatdata.answer(conn, question, history=history)
@@ -579,6 +587,7 @@ def billing_generate(body: GenerateBills):
     jid = jobs.new_job("generate", f"Generating bills for {month}…")
 
     def run():
+        jobs.use(jid)
         try:
             with db.connect() as conn:
                 if not db.work_for_month(conn, month):
@@ -753,6 +762,7 @@ def billing_email(
     jid = jobs.new_job("email", f"Emailing bills for {month}…")
 
     def run():
+        jobs.use(jid)
         try:
             def prog(pct, msg):
                 jobs.set_progress(percent=pct, message=msg)
