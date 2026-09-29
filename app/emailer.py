@@ -15,6 +15,23 @@ def smtp_configured() -> bool:
     return bool(config.SMTP_HOST and config.SMTP_FROM)
 
 
+def person_name(raw: str) -> str:
+    """First name, then last name. The roster stores most names as LAST, First."""
+    text = " ".join(str(raw or "").split())
+    if not text:
+        return ""
+    if "," not in text:
+        return text
+    last, _, first = text.partition(",")
+    first = " ".join(first.split())
+    last = " ".join(last.split())
+    if last.isupper():
+        last = last.title()
+    if first and last:
+        return f"{first} {last}"
+    return first or last
+
+
 def recipient_addresses(raw: str) -> list[str]:
     """Every address in a client email field, in order, without duplicates."""
     found: list[str] = []
@@ -64,10 +81,11 @@ def email_month_bills(conn, month: str, on_progress=None) -> dict:
             continue
         try:
             pdf = storage.get_bytes(b["s3_key"])
+            who = person_name(b.get("client_name") or "") or b["client_name"]
             send_pdf(
                 to_addr=", ".join(addresses),
-                subject=f"{config.COMPANY_NAME} invoice — {month}",
-                body=f"Hi {b['client_name']},\n\nPlease find your invoice for {month} attached.\n\nThanks,\n{config.COMPANY_NAME}\n",
+                subject=f"{who} — {config.COMPANY_NAME} invoice — {month}",
+                body=f"Hi {who},\n\nPlease find your invoice for {month} attached.\n\nThanks,\n{config.COMPANY_NAME}\n",
                 pdf_bytes=pdf,
                 filename=f"invoice_{month}.pdf",
             )
