@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Data — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=25"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=26"/>
 </head>
 <body>
 <header class="top">
@@ -109,6 +109,8 @@
     <p class="msg chat-status" id="chatMsg"></p>
   </section>
   </div>
+  <div class="col-resize left" role="separator" aria-orientation="vertical" aria-label="Resize middle windows"></div>
+  <div class="col-resize right" role="separator" aria-orientation="vertical" aria-label="Resize middle windows"></div>
 </main>
 <script src="/static/js/app.js?v=12"></script>
 <script>
@@ -1007,6 +1009,48 @@ function pullSharedReview() {
 }
 pullSharedReview();
 setInterval(pullSharedReview, 2500);
+
+(function () {
+  const main = document.querySelector("main.split-data");
+  if (!main) return;
+  const saved = localStorage.getItem("nicks-middle-width");
+  if (saved && /^\d+px$/.test(saved)) main.style.setProperty("--work-col", saved);
+  const minWidth = 280;
+  function maxWidth() {
+    return Math.max(minWidth, main.clientWidth - 32);
+  }
+  function apply(px) {
+    const width = Math.round(Math.min(maxWidth(), Math.max(minWidth, px)));
+    const value = width + "px";
+    main.style.setProperty("--work-col", value);
+    localStorage.setItem("nicks-middle-width", value);
+  }
+  main.querySelectorAll(".col-resize").forEach(bar => {
+    bar.addEventListener("pointerdown", (event) => {
+      if (window.matchMedia("(max-width: 960px)").matches) return;
+      event.preventDefault();
+      bar.setPointerCapture(event.pointerId);
+      bar.classList.add("is-drag");
+      document.body.classList.add("is-col-drag");
+      const move = (ev) => {
+        const rect = main.getBoundingClientRect();
+        const center = rect.left + rect.width / 2;
+        apply(Math.abs(ev.clientX - center) * 2);
+      };
+      const stop = () => {
+        bar.classList.remove("is-drag");
+        document.body.classList.remove("is-col-drag");
+        bar.removeEventListener("pointermove", move);
+        bar.removeEventListener("pointerup", stop);
+        bar.removeEventListener("pointercancel", stop);
+      };
+      bar.addEventListener("pointermove", move);
+      bar.addEventListener("pointerup", stop);
+      bar.addEventListener("pointercancel", stop);
+      move(event);
+    });
+  });
+})();
 </script>
 </body>
 </html>
