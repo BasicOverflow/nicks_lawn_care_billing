@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Data — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=26"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=27"/>
 </head>
 <body>
 <header class="top">
@@ -1013,43 +1013,81 @@ setInterval(pullSharedReview, 2500);
 (function () {
   const main = document.querySelector("main.split-data");
   if (!main) return;
-  const saved = localStorage.getItem("nicks-middle-width");
-  if (saved && /^\d+px$/.test(saved)) main.style.setProperty("--work-col", saved);
-  const minWidth = 280;
-  function maxWidth() {
-    return Math.max(minWidth, main.clientWidth - 32);
+  const leftBar = main.querySelector(".col-resize.left");
+  const rightBar = main.querySelector(".col-resize.right");
+  const savedWork = localStorage.getItem("nicks-middle-width");
+  const savedClients = localStorage.getItem("nicks-clients-width");
+  if (savedWork && /^\d+px$/.test(savedWork)) main.style.setProperty("--work-col", savedWork);
+  if (savedClients && /^\d+px$/.test(savedClients)) main.style.setProperty("--clients-col", savedClients);
+
+  function metrics() {
+    const style = getComputedStyle(main);
+    const padLeft = parseFloat(style.paddingLeft) || 0;
+    const padRight = parseFloat(style.paddingRight) || 0;
+    const gap = parseFloat(style.columnGap) || 0;
+    return { padLeft, padRight, gap, inner: main.clientWidth - padLeft - padRight };
   }
-  function apply(px) {
-    const width = Math.round(Math.min(maxWidth(), Math.max(minWidth, px)));
-    const value = width + "px";
-    main.style.setProperty("--work-col", value);
-    localStorage.setItem("nicks-middle-width", value);
+  function workEl() { return main.querySelector(".data-col-work"); }
+  function placeBars() {
+    const box = main.getBoundingClientRect();
+    const work = workEl();
+    if (!work) return;
+    const rect = work.getBoundingClientRect();
+    if (leftBar) leftBar.style.left = (rect.left - box.left) + "px";
+    if (rightBar) rightBar.style.left = (rect.right - box.left) + "px";
   }
-  main.querySelectorAll(".col-resize").forEach(bar => {
+  function drag(bar, start, move) {
     bar.addEventListener("pointerdown", (event) => {
       if (window.matchMedia("(max-width: 960px)").matches) return;
       event.preventDefault();
       bar.setPointerCapture(event.pointerId);
       bar.classList.add("is-drag");
       document.body.classList.add("is-col-drag");
-      const move = (ev) => {
-        const rect = main.getBoundingClientRect();
-        const center = rect.left + rect.width / 2;
-        apply(Math.abs(ev.clientX - center) * 2);
-      };
+      const state = start();
+      const onMove = (ev) => { move(ev, state); placeBars(); };
       const stop = () => {
         bar.classList.remove("is-drag");
         document.body.classList.remove("is-col-drag");
-        bar.removeEventListener("pointermove", move);
+        bar.removeEventListener("pointermove", onMove);
         bar.removeEventListener("pointerup", stop);
         bar.removeEventListener("pointercancel", stop);
+        placeBars();
       };
-      bar.addEventListener("pointermove", move);
+      bar.addEventListener("pointermove", onMove);
       bar.addEventListener("pointerup", stop);
       bar.addEventListener("pointercancel", stop);
-      move(event);
+      onMove(event);
     });
+  }
+  if (leftBar) drag(leftBar, () => {
+    const workWidth = Math.round(workEl().getBoundingClientRect().width);
+    const value = workWidth + "px";
+    main.style.setProperty("--work-col", value);
+    localStorage.setItem("nicks-middle-width", value);
+    return { workWidth };
+  }, (ev, state) => {
+    const { padLeft, gap, inner } = metrics();
+    const maxClients = Math.max(160, inner - state.workWidth - gap * 2);
+    let clients = ev.clientX - main.getBoundingClientRect().left - padLeft - gap;
+    clients = Math.round(Math.min(maxClients, Math.max(160, clients)));
+    const value = clients + "px";
+    main.style.setProperty("--clients-col", value);
+    localStorage.setItem("nicks-clients-width", value);
   });
+  if (rightBar) drag(rightBar, () => ({}), (ev) => {
+    const work = workEl();
+    const { inner, gap } = metrics();
+    const clients = main.querySelector(".data-col-clients");
+    const clientsWidth = clients ? clients.getBoundingClientRect().width : 0;
+    const maxWork = Math.max(280, inner - clientsWidth - gap * 2);
+    let width = ev.clientX - work.getBoundingClientRect().left;
+    width = Math.round(Math.min(maxWork, Math.max(280, width)));
+    const value = width + "px";
+    main.style.setProperty("--work-col", value);
+    localStorage.setItem("nicks-middle-width", value);
+  });
+  placeBars();
+  window.addEventListener("resize", placeBars);
 })();
 </script>
 </body>

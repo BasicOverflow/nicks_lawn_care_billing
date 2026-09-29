@@ -98,8 +98,9 @@ main {
 }
 main.split-data {
   --work-col: 40vw;
+  --clients-col: minmax(0, 1fr);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) min(var(--work-col), 100%) minmax(0, 1fr);
+  grid-template-columns: var(--clients-col) min(var(--work-col), 100%) minmax(0, 1fr);
   column-gap: .75rem;
   align-items: start;
   position: relative;
@@ -119,8 +120,6 @@ main.split-data > .data-col-work { grid-column: 2; width: min(100%, var(--work-c
   touch-action: none;
   margin-left: -7px;
 }
-.col-resize.left { left: calc(50% - min(var(--work-col), 100%) / 2); }
-.col-resize.right { left: calc(50% + min(var(--work-col), 100%) / 2); }
 .col-resize::after {
   content: "";
   position: absolute;
