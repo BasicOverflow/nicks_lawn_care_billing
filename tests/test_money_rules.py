@@ -72,6 +72,49 @@ def test_tax_includes_pretax_prior_and_not_an_already_taxed_total():
     assert by_name["Total"]["amount"] == __import__("decimal").Decimal("156.35")
 
 
+def test_tax_workbook_separates_revenue_tax_and_previous_unpaid():
+    from io import BytesIO
+    from openpyxl import load_workbook
+    from app.billing import tax_client_figures, tax_workbook_bytes
+
+    taxed_now = tax_client_figures([
+        {"description": "Mowing", "amount": 100, "day_or_note": "5"},
+        {"description": "Previous bill (2026-08)", "amount": 50, "day_or_note": "prior:2026-08"},
+    ])
+    assert taxed_now["revenue"] == __import__("decimal").Decimal("100.00")
+    assert taxed_now["prior"] == __import__("decimal").Decimal("50.00")
+    assert taxed_now["tax"] == __import__("decimal").Decimal("9.53")
+    already = tax_client_figures([
+        {"description": "Mowing", "amount": 40, "day_or_note": "2"},
+        {"description": "Previous bill (2026-08)", "amount": 20, "day_or_note": "prior-taxed:2026-08"},
+    ])
+    assert already["revenue"] == __import__("decimal").Decimal("40.00")
+    assert already["tax"] == __import__("decimal").Decimal("2.54")
+    assert already["prior_taxed"] == __import__("decimal").Decimal("20.00")
+    plain = tax_client_figures([{"description": "Mowing", "amount": 10, "day_or_note": "1"}])
+    data = tax_workbook_bytes("2026-09", [
+        ("SMITH, Mary", taxed_now),
+        ("JONES, Ann", already),
+        ("LEE, Pat", plain),
+    ])
+    book = load_workbook(BytesIO(data))
+    sheet = book.active
+    assert sheet["A1"].value.startswith("Tax table for September 2026")
+    assert sheet["B3"].value == "This month's revenue"
+    assert sheet["D3"].value == "Sales tax"
+    assert "Previous unpaid" in sheet["C3"].value
+    assert sheet["B4"].value == 100
+    assert sheet["C4"].value == 50
+    assert sheet["D4"].value == 9.53
+    assert "August 2026" in sheet["G4"].value
+    assert sheet["E5"].value == 20
+    assert sheet["C6"].value == 0
+    labels = [sheet.cell(row, 1).value for row in range(8, 14)]
+    assert "This month's revenue" in labels
+    assert "Sales tax" in labels
+    assert any(str(label).startswith("Previous unpaid") for label in labels)
+
+
 def test_discount_reduces_tax_and_has_no_date():
     rows = compile_invoice_lines([
         {"description": "Mowing", "amount": 100, "day_or_note": "5"},

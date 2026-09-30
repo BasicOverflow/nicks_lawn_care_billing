@@ -619,9 +619,68 @@ def tax_table_tsv(conn, month: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def tax_client_figures(lines: list[dict]) -> dict:
+    """This month's revenue, earlier unpaid balances, and the sales tax on the bill.
+
+    Revenue is this month's work after discounts. An earlier unpaid total is not
+    revenue. One that has not been taxed yet is included in this month's sales
+    tax. One that already includes tax is added after the tax.
+    """
+    revenue = Decimal("0")
+    prior = Decimal("0")
+    prior_taxed = Decimal("0")
+    prior_notes: list[str] = []
+    prior_taxed_notes: list[str] = []
+    for line in lines:
+        role, prior_month = line_role(line)
+        label, _day = _service(line)
+        if not label or label.lower() in {"sales tax", "total"}:
+            continue
+        amount = _money(line.get("amount"))
+        if role == "discount":
+            revenue += -abs(amount)
+        elif role == "prior":
+            prior += amount
+            if prior_month:
+                prior_notes.append(_month_label(prior_month))
+        elif role == "prior_taxed":
+            prior_taxed += amount
+            if prior_month:
+                prior_taxed_notes.append(_month_label(prior_month))
+        else:
+            revenue += amount
+    revenue = revenue.quantize(_MONEY, rounding=ROUND_HALF_UP)
+    prior = prior.quantize(_MONEY, rounding=ROUND_HALF_UP)
+    prior_taxed = prior_taxed.quantize(_MONEY, rounding=ROUND_HALF_UP)
+    tax = ((revenue + prior) * _TAX_RATE).quantize(_MONEY, rounding=ROUND_HALF_UP)
+    total = (revenue + prior + tax + prior_taxed).quantize(_MONEY, rounding=ROUND_HALF_UP)
+    notes = []
+    if prior_notes:
+        notes.append(", ".join(prior_notes) + " — taxed with this month")
+    if prior_taxed_notes:
+        notes.append(", ".join(prior_taxed_notes) + " — tax already included")
+    return {
+        "revenue": revenue,
+        "prior": prior,
+        "prior_taxed": prior_taxed,
+        "tax": tax,
+        "total": total,
+        "note": "; ".join(notes),
+    }
+
+
+def _month_label(raw: str) -> str:
+    text = str(raw or "").strip()
+    parts = text.split("-", 1)
+    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+        year, mon = int(parts[0]), int(parts[1])
+        if 1 <= mon <= 12:
+            return date(year, mon, 1).strftime("%B %Y")
+    return text
+
+
 def tax_table_xlsx(conn, month: str) -> bytes:
-    """One sheet of invoice lines, including sales tax and the total."""
-    from openpyxl import Workbook
+    """Excel workbook: this month's revenue, sales tax, and any earlier unpaid balance."""
     from . import db
 
     rows = db.work_for_month(conn, month)
@@ -634,18 +693,126 @@ def tax_table_xlsx(conn, month: str) -> bytes:
             order.append(cid)
             names[cid] = row["client_name"]
         by_client[cid].append(row)
+    figures = [(names[cid], tax_client_figures(by_client[cid])) for cid in order]
+    return tax_workbook_bytes(month, figures)
+
+
+def tax_workbook_bytes(month: str, figures: list[tuple[str, dict]]) -> bytes:
+    """Build the tax workbook from per-client figures."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill, Side, Border
+
+    _letter, work_month, _month_num = _invoice_when(month)
+    del _letter, _month_num
+    year = ""
+    parts = str(month or "").split("-", 1)
+    if len(parts) == 2 and parts[0].isdigit():
+        year = parts[0]
+    title = f"Tax table for {work_month} {year}".strip()
+
     book = Workbook()
     sheet = book.active
     sheet.title = "Tax"
-    sheet.append(["Client", "Date", "Description", "Amount"])
-    for cid in order:
-        for line in compile_invoice_lines(by_client[cid], month):
-            sheet.append([
-                names[cid],
-                line["date"],
-                line["description"],
-                float(line["amount"]),
-            ])
+    headers = [
+        "Client",
+        "This month's revenue",
+        "Previous unpaid, taxed this month",
+        "Sales tax",
+        "Previous unpaid, tax already included",
+        "Total billed",
+        "Previous unpaid from",
+    ]
+    sheet.append([title])
+    sheet.append([])
+    sheet.append(headers)
+    header_row = 3
+    first_data = 4
+    for name, fig in figures:
+        sheet.append([
+            name,
+            float(fig["revenue"]),
+            float(fig["prior"]),
+            float(fig["tax"]),
+            float(fig["prior_taxed"]),
+            float(fig["total"]),
+            fig["note"],
+        ])
+    last_data = header_row + len(figures)
+    sheet.append([])
+    totals = {
+        "revenue": sum((fig["revenue"] for _name, fig in figures), Decimal("0")),
+        "prior": sum((fig["prior"] for _name, fig in figures), Decimal("0")),
+        "tax": sum((fig["tax"] for _name, fig in figures), Decimal("0")),
+        "prior_taxed": sum((fig["prior_taxed"] for _name, fig in figures), Decimal("0")),
+        "total": sum((fig["total"] for _name, fig in figures), Decimal("0")),
+    }
+    summary = [
+        ("This month's revenue", totals["revenue"]),
+        ("Sales tax", totals["tax"]),
+        ("Previous unpaid, taxed this month", totals["prior"]),
+        ("Previous unpaid, tax already included", totals["prior_taxed"]),
+        ("Total billed", totals["total"]),
+    ]
+    summary_start = last_data + 2
+    for label, amount in summary:
+        sheet.append([label, float(amount)])
+    if totals["prior"] == 0 and totals["prior_taxed"] == 0:
+        sheet.append(["No previous unpaid amounts on these bills."])
+    else:
+        sheet.append(["Previous unpaid amounts are listed above. They are not this month's revenue."])
+
+    money = '"$"#,##0.00'
+    thin = Border(
+        left=Side(style="thin", color="D0D0D0"),
+        right=Side(style="thin", color="D0D0D0"),
+        top=Side(style="thin", color="D0D0D0"),
+        bottom=Side(style="thin", color="D0D0D0"),
+    )
+    header_fill = PatternFill("solid", fgColor="1F4E36")
+    tax_fill = PatternFill("solid", fgColor="FFF2CC")
+    unpaid_fill = PatternFill("solid", fgColor="FCE4D6")
+    title_font = Font(name="Calibri", bold=True, size=14)
+    head_font = Font(name="Calibri", bold=True, color="FFFFFF")
+    sheet["A1"].font = title_font
+    sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+    for col in range(1, len(headers) + 1):
+        cell = sheet.cell(header_row, col)
+        cell.font = head_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+    for row in range(first_data, last_data + 1):
+        for col in range(1, len(headers) + 1):
+            cell = sheet.cell(row, col)
+            cell.border = thin
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        for col in (2, 3, 4, 5, 6):
+            sheet.cell(row, col).number_format = money
+        sheet.cell(row, 4).fill = tax_fill
+        if float(sheet.cell(row, 3).value or 0):
+            sheet.cell(row, 3).fill = unpaid_fill
+            sheet.cell(row, 7).font = Font(name="Calibri", bold=True)
+        if float(sheet.cell(row, 5).value or 0):
+            sheet.cell(row, 5).fill = unpaid_fill
+            sheet.cell(row, 7).font = Font(name="Calibri", bold=True)
+    for offset, (label, _amount) in enumerate(summary):
+        row = summary_start + offset
+        label_cell = sheet.cell(row, 1)
+        value_cell = sheet.cell(row, 2)
+        label_cell.font = Font(name="Calibri", bold=True)
+        value_cell.font = Font(name="Calibri", bold=True)
+        value_cell.number_format = money
+        if label == "Sales tax":
+            label_cell.fill = tax_fill
+            value_cell.fill = tax_fill
+        if label.startswith("Previous unpaid") and float(value_cell.value or 0):
+            label_cell.fill = unpaid_fill
+            value_cell.fill = unpaid_fill
+    sheet.freeze_panes = "A4"
+    sheet.auto_filter.ref = f"A{header_row}:G{last_data if figures else header_row}"
+    widths = [34, 24, 34, 16, 40, 16, 46]
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[chr(64 + index)].width = width
+    sheet.row_dimensions[header_row].height = 32
     buf = io.BytesIO()
     book.save(buf)
     return buf.getvalue()

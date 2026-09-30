@@ -717,7 +717,7 @@ def billing_tax(
 def billing_tax_xlsx(
     month: str = ApiPath(..., description="Billing month, YYYY-MM."),
 ):
-    """Excel workbook of invoice lines, including sales tax and the total."""
+    """Excel workbook of this month's revenue, sales tax, and any earlier unpaid balance."""
     with db.connect() as conn:
         data = billing.tax_table_xlsx(conn, month)
     return Response(
