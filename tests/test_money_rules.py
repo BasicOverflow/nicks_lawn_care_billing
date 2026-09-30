@@ -333,6 +333,42 @@ def test_near_spelling_suggests_the_roster_client():
     assert open_conflicts(other, roster, [])[0]["suggestion"] is None
 
 
+def test_editor_accepts_multiple_dates_on_one_line():
+    from app.billing import _editable_bill_lines, _work_items_from_editor_line, compile_invoice_lines
+
+    stored = [
+        {"description": "Mowing 8", "amount": 50, "day_or_note": "8"},
+        {"description": "Mowing 15", "amount": 50, "day_or_note": "15"},
+        {"description": "Mowing 22", "amount": 50, "day_or_note": "22"},
+    ]
+    editor = _editable_bill_lines(stored, "2026-09")
+    assert len(editor) == 1
+    assert editor[0]["description"] == "Mowing"
+    assert editor[0]["date"] == "9/8, 9/15, 9/22"
+
+    items = _work_items_from_editor_line({
+        "description": "Mowing",
+        "amount": 150,
+        "date": "9/4, 9/12, 9/21",
+        "kind": "visit",
+    }, "2026-09")
+    assert len(items) == 3
+    assert [item["day_or_note"] for item in items] == ["4", "12", "21"]
+    rows = compile_invoice_lines(items, "2026-09")
+    mowing = next(row for row in rows if row["description"] == "Mowing")
+    assert mowing["date"] == "9/4, 9/12, 9/21"
+    assert mowing["amount"] == __import__("decimal").Decimal("150.00")
+
+    past = _work_items_from_editor_line({
+        "description": "Mowing",
+        "amount": 120,
+        "date": "8/4, 8/12, 8/21",
+        "kind": "visit",
+    }, "2026-09")
+    assert len(past) == 3
+    assert all(item["day_or_note"].startswith("prior:2026-08:") for item in past)
+
+
 def test_set_up_client_is_used_for_a_near_spelling():
     from app.knowledge import filing_client, open_conflicts
 

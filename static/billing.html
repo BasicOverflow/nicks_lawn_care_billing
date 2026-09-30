@@ -1236,10 +1236,8 @@ function fillEditor(editor, detail) {
     tdDate.className = "date-cell";
     const inDate = document.createElement("input");
     inDate.className = "ed-date";
-    inDate.type = "number";
-    inDate.min = "1";
-    inDate.max = "31";
-    inDate.placeholder = "Day";
+    inDate.type = "text";
+    inDate.placeholder = "9/4, 9/12";
     inDate.value = line.date != null && line.date !== "" ? String(line.date) : "";
     tdDate.appendChild(inDate);
     const tdDesc = document.createElement("td");
@@ -1323,6 +1321,7 @@ function showViewer(bills, title) {
         <textarea class="ed-signoff" rows="2"></textarea>
         <p class="hint">Greeting, sentence, closing, and sign-off are the words outside the price table. Clear one and save to use the usual wording.</p>
         <label>Line items</label>
+        <p class="hint">Dates can list several visits: <code>9/4, 9/12, 9/21</code> or <code>4, 12, 21</code>. Use an earlier month for past work, like <code>8/4, 8/12</code>.</p>
         <table class="edit-lines"><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th></th></tr></thead>
         <tbody class="ed-lines-body"></tbody></table>
         <p class="ed-totals hint"></p>

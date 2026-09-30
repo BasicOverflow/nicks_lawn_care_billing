@@ -252,6 +252,7 @@ def compile_invoice_lines(lines: list[dict], month: str) -> list[dict]:
                 "description": label,
                 "amount": _money(line.get("amount")),
                 "role": role,
+                "prior_month": prior_month,
             })
             continue
         key = f"{role}:{label.casefold()}"
@@ -297,15 +298,28 @@ def compile_invoice_lines(lines: list[dict], month: str) -> list[dict]:
                 dates = ", ".join(str(day) for day in days)
         else:
             dates = ""
-        printed = {"date": dates, "description": row["description"], "amount": amount}
+        printed = {
+            "date": dates,
+            "description": row["description"],
+            "amount": amount,
+            "kind": row["role"],
+            "prior_month": "",
+        }
         if row["role"] == "prior_taxed":
             taxed_rows.append(printed)
             after_tax += amount
         else:
             table.append(printed)
             taxable += amount
-    for printed in prior_items:
-        if printed["role"] == "prior_taxed":
+    for item in prior_items:
+        printed = {
+            "date": item["date"],
+            "description": item["description"],
+            "amount": item["amount"],
+            "kind": item["role"],
+            "prior_month": item.get("prior_month") or "",
+        }
+        if item["role"] == "prior_taxed":
             taxed_rows.append(printed)
             after_tax += printed["amount"]
         else:
@@ -659,7 +673,7 @@ def get_editable_bill(conn, month: str, client_id: int) -> dict | None:
         "intro": invoice_sentence(month, bill.get("cover_note") if bill else None),
         "closing": letter_or_default(bill.get("closing") if bill else None, default_closing()),
         "signoff": letter_or_default(bill.get("signoff") if bill else None, default_signoff()),
-        "lines": [_editor_line(ln) for ln in lines],
+        "lines": _editable_bill_lines(lines, month),
         "preview": [
             {"date": row["date"], "description": row["description"], "amount": float(row["amount"])}
             for row in compile_invoice_lines(lines, month)
@@ -671,17 +685,125 @@ def get_editable_bill(conn, month: str, client_id: int) -> dict | None:
     }
 
 
-def _editor_line(ln: dict) -> dict:
-    role, prior_month, prior_day = line_role(ln)
-    amount = float(ln["amount"]) if ln.get("amount") is not None else 0.0
-    return {
-        "id": int(ln["id"]),
-        "description": ln.get("description") or "",
-        "amount": amount,
-        "kind": role,
-        "prior_month": prior_month,
-        "date": prior_day or _line_date(ln),
-    }
+def _visit_label(desc: str) -> str | None:
+    text = str(desc or "").strip()
+    if _MOW.fullmatch(text) or re.match(r"(?i)^mowing", text):
+        return "Mowing"
+    if _HEDGE.fullmatch(text) or re.match(r"(?i)^hedging", text) or text.lower() == "hedging":
+        return "Hedging"
+    return None
+
+
+def _parse_editor_dates(raw: str, bill_month: str) -> list[tuple[str, int, bool]]:
+    """Split a date cell into (month, day, is_hedge) tuples."""
+    _, _, _bill_mon = _invoice_when(bill_month)
+    year = int(str(bill_month).split("-")[0])
+    out: list[tuple[str, int, bool]] = []
+    for part in re.split(r"[,;]+", str(raw or "")):
+        piece = part.strip()
+        if not piece:
+            continue
+        is_hedge = piece.lower().endswith("h") and not re.fullmatch(r"\d{1,2}/\d{1,2}h?", piece, re.I)
+        piece = piece.rstrip("hH").strip()
+        month_day = re.fullmatch(r"(\d{1,2})/(\d{1,2})", piece)
+        if month_day:
+            mon = int(month_day.group(1))
+            day = int(month_day.group(2))
+            out.append((f"{year}-{mon:02d}", day, is_hedge))
+            continue
+        day_only = re.fullmatch(r"(\d{1,2})", piece)
+        if day_only:
+            out.append((bill_month, int(day_only.group(1)), is_hedge))
+    return out
+
+
+def _split_amount(total: float, count: int) -> list[float]:
+    if count <= 0:
+        return []
+    if count == 1:
+        return [float(total)]
+    pieces = [round(float(total) / count, 2)] * count
+    pieces[-1] = round(float(total) - sum(pieces[:-1]), 2)
+    return pieces
+
+
+def _editable_bill_lines(stored: list[dict], month: str) -> list[dict]:
+    """PDF-shaped rows for the bill editor (no tax/total)."""
+    out: list[dict] = []
+    for row in compile_invoice_lines(stored, month):
+        desc = row["description"]
+        if desc in {"Sales tax", "Total"}:
+            continue
+        out.append({
+            "description": desc,
+            "amount": float(row["amount"]),
+            "date": row.get("date") or "",
+            "kind": row.get("kind") or "visit",
+            "prior_month": row.get("prior_month") or "",
+        })
+    return out
+
+
+def _work_items_from_editor_line(ln: dict, bill_month: str) -> list[dict]:
+    """Turn one editor row into stored work items."""
+    kind = str(ln.get("kind") or "visit").strip()
+    desc = str(ln.get("description") or "").strip()
+    raw_amt = ln.get("amount")
+    try:
+        amount = float(raw_amt) if raw_amt is not None and str(raw_amt).strip() != "" else 0.0
+    except (TypeError, ValueError):
+        amount = 0.0
+    if not desc and amount == 0:
+        return []
+    if desc in {"Sales tax", "Total"}:
+        return []
+
+    if kind == "discount" or desc.lower().startswith("discount"):
+        return [{"description": desc, "amount": amount, "day_or_note": "discount"}]
+
+    if kind in {"prior", "prior_taxed"}:
+        prior_month = str(ln.get("prior_month") or "").strip()
+        if not prior_month and desc.startswith("Previous bill ("):
+            inner = desc[len("Previous bill (") :]
+            if inner.endswith(")"):
+                prior_month = inner[:-1].strip()
+        taxed = kind == "prior_taxed"
+        dates = _parse_editor_dates(str(ln.get("date") or ""), bill_month)
+        if dates:
+            items = []
+            pieces = _split_amount(amount, len(dates))
+            for (visit_month, day, _is_hedge), piece in zip(dates, pieces):
+                base = f"prior{'-taxed' if taxed else ''}:{visit_month}"
+                items.append({
+                    "description": desc,
+                    "amount": piece,
+                    "day_or_note": f"{base}:{day}",
+                })
+            return items
+        base = f"prior{'-taxed' if taxed else ''}:{prior_month}"
+        return [{"description": desc, "amount": amount, "day_or_note": base}]
+
+    visit_label = _visit_label(desc)
+    dates = _parse_editor_dates(str(ln.get("date") or ""), bill_month)
+    if dates and visit_label:
+        pieces = _split_amount(amount, len(dates))
+        items = []
+        for (visit_month, day, is_hedge), piece in zip(dates, pieces):
+            if visit_month != bill_month:
+                note = f"prior:{visit_month}:{day}"
+            elif is_hedge or visit_label == "Hedging":
+                note = f"{day}h"
+            else:
+                note = str(day)
+            items.append({
+                "description": f"{visit_label} {day}",
+                "amount": piece,
+                "day_or_note": note,
+            })
+        return items
+
+    note = _note_for_line(ln, None)
+    return [{"description": desc, "amount": amount, "day_or_note": note}]
 
 
 def _note_for_line(ln: dict, existing: dict | None) -> str | None:
@@ -738,36 +860,18 @@ def save_editable_bill(conn, month: str, client_id: int, *, email: str, address:
             prefer_mail=choice == "mail",
         )
 
-    stored = {int(r["id"]): r for r in db.work_for_client_month(conn, month, client_id)}
-    existing_ids = set(stored)
-    keep_ids = set()
+    for row in db.work_for_client_month(conn, month, client_id):
+        db.delete_work_item(conn, int(row["id"]))
     for ln in lines:
-        desc = str(ln.get("description") or "").strip()
-        raw_amt = ln.get("amount")
-        try:
-            amt = float(raw_amt) if raw_amt is not None and str(raw_amt).strip() != "" else 0.0
-        except (TypeError, ValueError):
-            amt = 0.0
-        wid = ln.get("id")
-        existing = stored.get(int(wid)) if wid and int(wid) in existing_ids else None
-        note = _note_for_line(ln, existing)
-        if existing:
-            db.update_work_item(
-                conn, int(wid), description=desc, amount=amt, day_or_note=note,
-            )
-            keep_ids.add(int(wid))
-        elif desc or amt:
-            new_id = db.add_work_item(
+        for item in _work_items_from_editor_line(ln, month):
+            db.add_work_item(
                 conn,
                 client_id=client_id,
                 month=month,
-                day_or_note=note,
-                description=desc,
-                amount=amt,
+                day_or_note=item.get("day_or_note"),
+                description=item["description"],
+                amount=item["amount"],
             )
-            keep_ids.add(new_id)
-    for wid in existing_ids - keep_ids:
-        db.delete_work_item(conn, wid)
 
     rows = [dict(r) for r in db.work_for_client_month(conn, month, client_id)]
     client = db.get_client(conn, client_id)

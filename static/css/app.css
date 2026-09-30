@@ -504,7 +504,7 @@ td.row-tools { width: 1%; white-space: nowrap; }
   width: 100%;
   margin: 0;
 }
-.edit-lines .date-cell { width: 4.5rem; }
+.edit-lines .date-cell { width: 9.5rem; }
 .edit-lines .date-cell input { width: 100%; }
 .edit-lines .amt-cell { width: 7rem; }
 .pdf-frame {
