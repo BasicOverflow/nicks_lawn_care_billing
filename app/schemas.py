@@ -133,6 +133,7 @@ class BillLineIn(BaseModel):
         description="visit, discount, prior (taxed with this month), or prior_taxed (added after tax).",
     )
     prior_month: str = Field("", description="Month label for a previous-bill total.")
+    date: str = Field("", description="Day of the month for this line, or a prior-month day.")
 
 
 class ManualWork(BaseModel):
@@ -190,6 +191,10 @@ class SaveBill(BaseModel):
     delivery: str = Field(
         "",
         description="email, sms, or mail. This is how the bill is sent.",
+    )
+    save_to_client: bool = Field(
+        True,
+        description="Also write email, phone, address, and delivery onto the client list.",
     )
 
 

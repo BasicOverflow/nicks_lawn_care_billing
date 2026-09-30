@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Work — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=36"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=37"/>
 </head>
 <body>
 <header class="top">
@@ -341,34 +341,66 @@ function dayPieces(chunk) {
   return out;
 }
 
+function parseJobSuffix(chunk) {
+  const text = String(chunk || "").trim();
+  if (!text || !/[A-Za-z]/.test(text)) return { job: null, leftover: text };
+  const match = text.match(
+    /(?:(\d{1,2})(?!h)\s+)?([A-Za-z](?:.*?\S)?)\s*\$?\s*(\d+(?:\.\d{1,2})?)\s*$/i
+  );
+  if (!match || match.index + match[0].length !== text.length) return { job: null, leftover: text };
+  const name = match[2].replace(/\s+/g, " ").replace(/^[\s;,|]+|[\s;,|]+$/g, "");
+  if (!name) return { job: null, leftover: text };
+  const day = match[1] || "";
+  const label = day ? `${day} ${name} ${moneyLabel(match[3])}` : `${name} ${moneyLabel(match[3])}`;
+  return { job: label, leftover: text.slice(0, match.index).trim() };
+}
+
+function parseSegment(chunk) {
+  const hit = parseJobSuffix(chunk);
+  if (hit.job) return [...dayPieces(hit.leftover), hit.job];
+  return dayPieces(chunk);
+}
+
+function attachTrailingJobDays(segments) {
+  for (let i = 0; i < segments.length - 1; i++) {
+    const left = segments[i];
+    const right = segments[i + 1];
+    if (right.length !== 1 || isDayBox(right[0])) continue;
+    if (/^\d{1,2}\s+[A-Za-z]/.test(right[0])) continue;
+    const mowDays = left.filter(isDayBox).map(v => v.replace(/h$/i, ""));
+    if (mowDays.length < 2) continue;
+    const last = mowDays[mowDays.length - 1];
+    if (mowDays.filter(d => d === last).length < 2) continue;
+    right[0] = `${last} ${right[0]}`;
+  }
+}
+
+function dedupeJobMowDays(boxes) {
+  const jobDays = [];
+  boxes.forEach(box => {
+    if (isDayBox(box)) return;
+    const m = box.match(/^(\d{1,2})\s+[A-Za-z]/);
+    if (m) jobDays.push(m[1]);
+  });
+  const dropped = new Set();
+  return boxes.filter(box => {
+    if (!isDayBox(box)) return true;
+    const day = box.replace(/h$/i, "");
+    if (jobDays.includes(day) && !dropped.has(day)) {
+      dropped.add(day);
+      return false;
+    }
+    return true;
+  });
+}
+
 function splitMarks(text) {
   const src = String(text || "").trim();
   if (!src) return [];
-  const jobRe = /(?<=^|[^A-Za-z0-9])((?:[1-9]|[12]\d|3[01])(?!h)\s+(?:\|\s*)?)?([A-Za-z][^$|\d]{0,80}?)\s*\$?\s*(\d+(?:\.\d{1,2})?)(?!\d)/gi;
-  const hits = [];
-  let match;
-  while ((match = jobRe.exec(src))) {
-    let start = match.index;
-    let name = match[2].replace(/\s+/g, " ").replace(/^[\s;,|]+|[\s;,|]+$/g, "");
-    const hedgeLead = name.match(/^h\s+/i);
-    if (hedgeLead && start > 0 && /\d/.test(src[start - 1])) {
-      start += hedgeLead[0].length;
-      name = name.slice(hedgeLead[0].length).trim();
-    }
-    if (!name) continue;
-    const day = match[1] ? match[1].match(/\d+/)[0] : "";
-    const label = day ? `${day} ${name} ${moneyLabel(match[3])}` : `${name} ${moneyLabel(match[3])}`;
-    hits.push({ start, end: match.index + match[0].length, label });
-  }
-  const boxes = [];
-  let cursor = 0;
-  hits.forEach(hit => {
-    boxes.push(...dayPieces(src.slice(cursor, hit.start)));
-    boxes.push(hit.label);
-    cursor = hit.end;
-  });
-  boxes.push(...dayPieces(src.slice(cursor)));
-  return boxes;
+  const parts = src.split(/\s*\|\s*/).filter(Boolean);
+  const segments = parts.map(parseSegment);
+  attachTrailingJobDays(segments);
+  return dedupeJobMowDays(segments.flat());
 }
 
 function joinMarks(labels) {
@@ -1358,9 +1390,22 @@ function editorLines(editor) {
     id: tr.dataset.id ? Number(tr.dataset.id) : null,
     description: tr.querySelector(".ed-desc").value,
     amount: tr.querySelector(".ed-amt").value,
+    date: tr.querySelector(".ed-date") ? tr.querySelector(".ed-date").value : "",
     kind: tr.dataset.kind || "visit",
     prior_month: tr.dataset.priorMonth || "",
   }));
+}
+
+function editorContactChanged(editor, roster) {
+  if (!roster) return false;
+  const email = (editor.querySelector(".ed-email")?.value || "").trim();
+  const phone = (editor.querySelector(".ed-phone")?.value || "").trim();
+  const address = (editor.querySelector(".ed-address")?.value || "").trim();
+  const delivery = [...editor.querySelectorAll(".ed-channel")].find(r => r.checked)?.value || "";
+  return email !== (roster.email || "").trim()
+    || phone !== (roster.phone || "").trim()
+    || address !== (roster.address || "").trim()
+    || delivery !== (roster.delivery || "");
 }
 
 function refreshEditorTotals(editor) {
@@ -1408,6 +1453,12 @@ function fillEditor(editor, detail) {
   if (closingEl && detail.closing != null) closingEl.value = detail.closing;
   if (signoffEl && detail.signoff != null) signoffEl.value = detail.signoff;
 
+  editor._roster = {
+    email: detail.roster_email ?? detail.email ?? "",
+    phone: detail.roster_phone ?? detail.phone ?? "",
+    address: detail.roster_address ?? detail.address ?? "",
+    delivery: detail.roster_delivery ?? detail.delivery ?? "",
+  };
   const tbody = editor.querySelector("tbody.ed-lines-body") || editor.querySelector(".edit-lines tbody");
   if (!tbody) return;
   const lines = Array.isArray(detail.lines) ? detail.lines : [];
@@ -1418,6 +1469,16 @@ function fillEditor(editor, detail) {
     tr.dataset.id = line.id != null ? String(line.id) : "";
     tr.dataset.kind = line.kind || "visit";
     tr.dataset.priorMonth = line.prior_month || "";
+    const tdDate = document.createElement("td");
+    tdDate.className = "date-cell";
+    const inDate = document.createElement("input");
+    inDate.className = "ed-date";
+    inDate.type = "number";
+    inDate.min = "1";
+    inDate.max = "31";
+    inDate.placeholder = "Day";
+    inDate.value = line.date != null && line.date !== "" ? String(line.date) : "";
+    tdDate.appendChild(inDate);
     const tdDesc = document.createElement("td");
     const inDesc = document.createElement("input");
     inDesc.className = "ed-desc";
@@ -1440,6 +1501,7 @@ function fillEditor(editor, detail) {
     btn.textContent = "Remove";
     btn.onclick = () => {
       if (tbody.children.length <= 1) {
+        inDate.value = "";
         inDesc.value = "";
         inAmt.value = "";
         tr.dataset.id = "";
@@ -1451,7 +1513,7 @@ function fillEditor(editor, detail) {
       refreshEditorTotals(editor);
     };
     tdDel.appendChild(btn);
-    tr.append(tdDesc, tdAmt, tdDel);
+    tr.append(tdDate, tdDesc, tdAmt, tdDel);
     tbody.appendChild(tr);
   });
   refreshEditorTotals(editor);
@@ -1498,20 +1560,28 @@ function showViewer(bills, title) {
         <textarea class="ed-signoff" rows="2"></textarea>
         <p class="hint">Greeting, sentence, closing, and sign-off are the words outside the price table. Clear one and save to use the usual wording.</p>
         <label>Line items</label>
-        <table class="edit-lines"><thead><tr><th>Description</th><th>Amount</th><th></th></tr></thead>
+        <table class="edit-lines"><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th></th></tr></thead>
         <tbody class="ed-lines-body"></tbody></table>
         <p class="ed-totals hint"></p>
         <div class="prior-add">
-          <label>Previous month</label>
+          <label>Previous month total</label>
           <input class="prior-month" type="month"/>
-          <label>Total from that month</label>
-          <input class="prior-amt" type="number" step="0.01"/>
-          <label class="check-line"><input class="prior-taxed" type="checkbox"/> This amount already includes sales tax</label>
+          <input class="prior-amt" type="number" step="0.01" placeholder="Total"/>
+          <label class="check-line"><input class="prior-taxed" type="checkbox"/> Tax already included</label>
+          <button type="button" class="secondary ed-prior">Add previous total</button>
+        </div>
+        <div class="prior-add prior-job-add">
+          <label>Previous month job</label>
+          <input class="prior-job-month" type="month"/>
+          <input class="prior-job-day" type="number" min="1" max="31" placeholder="Day"/>
+          <input class="prior-job-desc" type="text" placeholder="Job name"/>
+          <input class="prior-job-amt" type="number" step="0.01" placeholder="Price"/>
+          <label class="check-line"><input class="prior-job-taxed" type="checkbox"/> Tax already included</label>
+          <button type="button" class="secondary ed-prior-job">Add previous job</button>
         </div>
         <div class="row-actions">
           <button type="button" class="secondary ed-add">Add line</button>
           <button type="button" class="secondary ed-discount">Add discount</button>
-          <button type="button" class="secondary ed-prior">Add bill total from previous month</button>
           <button type="button" class="ed-save">Save &amp; regenerate PDF</button>
           <button type="button" class="secondary ed-cancel">Cancel</button>
         </div>
@@ -1628,7 +1698,7 @@ function editorLetter(editor) {
     });
   };
 
-  editor.querySelector(".ed-add").onclick = () => refill([{ description: "", amount: "", kind: "visit" }]);
+  editor.querySelector(".ed-add").onclick = () => refill([{ date: "", description: "", amount: "", kind: "visit" }]);
   editor.querySelector(".ed-discount").onclick = () => refill([{ description: "Discount", amount: "", kind: "discount" }]);
   editor.querySelector(".ed-prior").onclick = () => {
     const priorMonth = editor.querySelector(".prior-month").value;
@@ -1651,6 +1721,30 @@ function editorLetter(editor) {
       : "Previous total will be included in this month’s sales tax.";
     msg.className = "msg ok";
   };
+  editor.querySelector(".ed-prior-job").onclick = () => {
+    const priorMonth = editor.querySelector(".prior-job-month").value;
+    const day = editor.querySelector(".prior-job-day").value;
+    const desc = editor.querySelector(".prior-job-desc").value.trim();
+    const amount = editor.querySelector(".prior-job-amt").value;
+    if (!priorMonth || !day || !desc || amount === "") {
+      msg.textContent = "Enter the previous month, day, job name, and price.";
+      msg.className = "msg err";
+      return;
+    }
+    const taxed = editor.querySelector(".prior-job-taxed").checked;
+    refill([{
+      date: day,
+      description: desc,
+      amount,
+      kind: taxed ? "prior_taxed" : "prior",
+      prior_month: priorMonth,
+    }]);
+    editor.querySelector(".prior-job-day").value = "";
+    editor.querySelector(".prior-job-desc").value = "";
+    editor.querySelector(".prior-job-amt").value = "";
+    msg.textContent = "Previous job added to the bill.";
+    msg.className = "msg ok";
+  };
 
   editor.querySelector(".ed-cancel").onclick = () => {
     editor.hidden = true;
@@ -1661,6 +1755,12 @@ function editorLetter(editor) {
   editor.querySelector(".ed-save").onclick = async () => {
     const month = el("month").value;
     const lines = editorLines(editor);
+    let saveToClient = true;
+    if (editorContactChanged(editor, editor._roster)) {
+      saveToClient = window.confirm(
+        "Also save this email, phone, address, and delivery on the client list?\n\nOK updates the client list. Cancel updates this bill only."
+      );
+    }
     msg.textContent = "Saving…";
     msg.className = "msg";
     try {
@@ -1670,6 +1770,7 @@ function editorLetter(editor) {
         body: JSON.stringify({
           ...editorLetter(editor),
           lines,
+          save_to_client: saveToClient,
         }),
       });
       bill.s3_key = r.bill.s3_key;

@@ -34,6 +34,34 @@ def test_adjacent_numbers_stay_apart():
     assert all(m[3] != 5012 for m in marks)
 
 
+def test_priced_job_parsing_from_pipe_segments():
+    marks = _kinds("16 | Mowing for 262 Giants Neck Rd 32")
+    assert ("mow", 16, "", None) in marks
+    assert ("custom", None, "Mowing for 262 Giants Neck Rd", 32.0) in marks
+    marks = _kinds("8 16 25 | 8 Hedge Trimming $100")
+    assert ("mow", 16, "", None) in marks
+    assert ("mow", 25, "", None) in marks
+    assert ("mow", 8, "", None) not in marks
+    assert ("custom", 8, "Hedge Trimming", 100.0) in marks
+    marks = _kinds("8 24 S. Lee Mowing 53")
+    assert ("mow", 8, "", None) in marks
+    assert ("custom", 24, "S. Lee Mowing", 53.0) in marks
+
+
+def test_prior_month_job_shows_previous_date():
+    rows = compile_invoice_lines([
+        {"description": "Mowing", "amount": 40, "day_or_note": "5"},
+        {
+            "description": "Bush trimming",
+            "amount": 50,
+            "day_or_note": "prior:2026-08:12",
+        },
+    ], "2026-09")
+    by_name = {row["description"]: row for row in rows}
+    assert by_name["Bush trimming"]["date"] == "8/12"
+    assert by_name["Total"]["amount"] == __import__("decimal").Decimal("95.72")
+
+
 def test_day_written_with_a_job_is_the_job_date():
     marks = _kinds("5 bush trimming $50")
     assert ("custom", 5, "bush trimming", 50.0) in marks
@@ -48,7 +76,8 @@ def test_day_written_with_a_job_is_the_job_date():
     assert mow_days == [5, 14, 21, 29]
     assert ("custom", 21, "Hedge Trimming", 87.0) in marks
     marks = _kinds("8 | bush trimming $50")
-    assert marks[0][0] == "custom" and marks[0][1] == 8
+    assert ("custom", None, "bush trimming", 50.0) in marks
+    assert ("mow", 8, "", None) in marks
     rows = compile_invoice_lines([
         {"description": "Bush trimming", "amount": 50, "day_or_note": "5"},
         {"description": "Mowing 8", "amount": 0, "day_or_note": "8", "mow_price": 42},

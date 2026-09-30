@@ -15,6 +15,13 @@ _COMMA_DAYS = re.compile(
     rf"(?<![\d.]){_DAY}(?:\s*,\s*{_DAY})+(?![\d.])"
 )
 _SPACES = re.compile(r"[ \t]{2,}")
+_DAY_TOKEN = re.compile(r"(?<![\d$.])(?P<day>[1-9]|[12]\d|3[01])(?P<mark>h)?(?![\d.])", re.I)
+# A house number after a price ("50 12 Main St") is an address, not a visit.
+_HOUSE_AFTER = re.compile(
+    r"\s+(?P<num>\d{1,4})\s+[A-Za-z][A-Za-z0-9 .'-]*"
+    r"(?:\s(?:St|Street|Rd|Road|Ave|Avenue|Dr|Drive|Ln|Lane|Ct|Court|Way|Blvd|Pl|Place|Neck)\.?)\b",
+    re.I,
+)
 
 
 def _split_joined(match: re.Match[str]) -> str:
@@ -29,30 +36,17 @@ def _split_commas(match: re.Match[str]) -> str:
 
 
 def normalize_work_marks(text: str) -> str:
-    """Keep each month-day as its own token, and keep any job wording.
-
-    Handwritten rows look like "9    16    23" or "5 bush trimming $50".
-    A vision model often collapses the numbers into a date such as "9/16".
-    Slashing, dashing, or comma-joining those day tokens is undone here.
-    Words and amounts that are not day numbers are left in place.
-    """
+    """Keep each month-day as its own token, and keep any job wording."""
     raw = (text or "").strip()
     if not raw:
         return ""
     flattened = _JOINED_DAYS.sub(_split_joined, raw)
     flattened = _COMMA_DAYS.sub(_split_commas, flattened)
     flattened = re.sub(r"(\d[A-Za-z]*)\s*,\s*(?=[A-Za-z$])", r"\1 ", flattened)
+    flattened = re.sub(r"(\d{1,2})\s+h\b", r"\1h", flattened, flags=re.I)
+    flattened = re.sub(r"(\d{1,2})\s+hedge\s*(?=\||\s*$)", r"\1h", flattened, flags=re.I)
+    flattened = re.sub(r"\$\s*(\d)", r" \1", flattened)
     return _SPACES.sub(" ", flattened).strip()
-
-
-_DAY_TOKEN = re.compile(r"(?<![\d$.])(?P<day>[1-9]|[12]\d|3[01])(?P<mark>h)?(?![\d.])", re.I)
-# A job date may sit immediately before the name, with the review pipe between them.
-_JOB = re.compile(
-    r"(?:(?<![A-Za-z0-9])(?P<day>[1-9]|[12]\d|3[01])(?![hH])\s+(?:\|\s*)?)?"
-    r"(?P<name>[A-Za-z](?:[^$\d|]{0,80}?))\s*\$?\s*(?P<amt>\d+(?:\.\d{1,2})?)(?!\d)"
-)
-# A house number after a price ("50 12 Main St") is an address, not a visit.
-_HOUSE_AFTER = re.compile(r"\s+(?P<num>\d+)\s+[A-Za-z][A-Za-z0-9 .'-]*")
 
 
 def _money_label(amount: float) -> str:
@@ -61,73 +55,160 @@ def _money_label(amount: float) -> str:
     return f"${amount:.2f}"
 
 
-def parse_work_marks(text: str) -> list[dict]:
-    """Split a work cell into mow days, hedge days, priced jobs, and leftover notes.
+def _strip_address_tail(text: str) -> str:
+    house = _HOUSE_AFTER.search(text)
+    if not house:
+        return text
+    before = text[:house.start()].rstrip()
+    if re.search(r"\d(?:\.\d{1,2})?$", before):
+        return before
+    return text
 
-    A bare day such as 9 is a mowing visit. 15h, 15H, 15 h, and 15 hedge are
-    hedge visits. A phrase with a written amount, with or without $, is its own
-    job. A house number after that amount is left out. Other words stay notes.
-    """
-    raw = normalize_work_marks(text)
+
+def _job_from_chunk(chunk: str) -> tuple[dict | None, str]:
+    """Return a custom job parsed from the end of chunk, plus any leftover day text."""
+    text = _strip_address_tail(chunk.strip())
+    if not text or not re.search(r"[A-Za-z]", text):
+        return None, chunk.strip()
+    trailing = re.search(r"\s+(?P<trail>[1-9]|[12]\d|3[01])(?!\d)\s*$", text)
+    trailing_day = trailing.group("trail") if trailing else ""
+    core = text[: trailing.start()].strip() if trailing else text
+    amt_match = re.search(r"\s+\$?\s*(?P<amt>\d+(?:\.\d{1,2})?)\s*$", core)
+    if not amt_match:
+        return None, text
+    end = amt_match.end()
+    house = _HOUSE_AFTER.match(core, end)
+    if house:
+        end = house.end()
+    head = core[: amt_match.start()].strip()
+    split = re.match(
+        r"^(?:(?P<prefix>(?:(?:[1-9]|[12]\d|3[01])[hH]?\s+)+))(?P<name>[A-Za-z].+)$",
+        head,
+    )
+    if split:
+        prefix = split.group("prefix").strip()
+        name = split.group("name").strip()
+    else:
+        prefix = ""
+        name = head
+    name = re.sub(r"\s+", " ", name).strip(" ;,|")
+    if not name or not re.search(r"[A-Za-z]", name):
+        return None, chunk.strip()
+    day = None
+    leftover_prefix = prefix
+    if prefix and re.search(r"(?<![\d.])(?:[1-9]|[12]\d|3[01])[hH]\s*$", prefix):
+        day = None
+    else:
+        day_match = re.search(r"(?<![\d.])(?P<day>[1-9]|[12]\d|3[01])(?!\d)\s*$", prefix)
+        if day_match:
+            day = int(day_match.group("day"))
+            leftover_prefix = prefix[: day_match.start()].strip()
+    amount = float(amt_match.group("amt"))
+    if amount <= 0:
+        return None, chunk.strip()
+    leftover = " ".join(part for part in (leftover_prefix, trailing_day) if part).strip()
+    return {
+        "kind": "custom",
+        "name": name,
+        "amount": amount,
+        "day": day,
+    }, leftover
+
+
+def _day_marks(text: str) -> list[dict]:
+    """Bare days and hedge marks from text with no priced job at the end."""
+    marks: list[dict] = []
+    for match in _DAY_TOKEN.finditer(text):
+        day = int(match.group("day"))
+        if match.group("mark"):
+            marks.append({"kind": "hedge", "day": day, "name": "", "amount": None})
+        else:
+            marks.append({"kind": "mow", "day": day, "name": "", "amount": None})
+    return marks
+
+
+def _dedupe_job_mow_days(marks: list[dict]) -> list[dict]:
+    """A day written for a custom job is not also a separate mowing day."""
+    job_days = [int(mark["day"]) for mark in marks if mark["kind"] == "custom" and mark.get("day")]
+    if not job_days:
+        return marks
+    out: list[dict] = []
+    for day in job_days:
+        removed = False
+        kept: list[dict] = []
+        for mark in marks:
+            if (
+                not removed
+                and mark["kind"] == "mow"
+                and int(mark.get("day") or 0) == day
+            ):
+                removed = True
+                continue
+            kept.append(mark)
+        marks = kept
+    return marks
+
+
+def _parse_chunk(chunk: str) -> list[dict]:
+    raw = chunk.strip()
     if not raw:
         return []
-    jobs: list[tuple[int, int, dict]] = []
+    marks: list[dict] = []
     bare = re.match(r"^(?P<dollar>\$)?\s*(?P<amt>\d+(?:\.\d{1,2})?)(?!\d)", raw)
     if bare:
         dayish = bool(re.fullmatch(r"(?:[1-9]|[12]\d|3[01])", bare.group("amt")))
         house = _HOUSE_AFTER.match(raw, bare.end())
         if bare.group("dollar") or not dayish:
             end = house.end() if house else bare.end()
-            jobs.append((
-                bare.start(),
-                end,
-                {"kind": "custom", "name": "Custom", "amount": float(bare.group("amt")), "day": None},
-            ))
-    for match in _JOB.finditer(raw):
-        name = re.sub(r"\s+", " ", match.group("name")).strip(" ;,|")
-        start = match.start()
-        end = match.end()
-        lead = re.match(r"(?i)h\b\s*", name)
-        if lead and re.search(r"(?<![\d.])(?:[1-9]|[12]\d|3[01])$", raw[:start]):
-            start += lead.end()
-            name = name[lead.end():].strip(" ;,|")
-        if not name:
+            marks.append({
+                "kind": "custom",
+                "name": "Custom",
+                "amount": float(bare.group("amt")),
+                "day": None,
+            })
+            raw = raw[end:].strip()
+    job, leftover = _job_from_chunk(raw)
+    if job:
+        marks.append(job)
+        marks.extend(_day_marks(leftover))
+        return marks
+    marks.extend(_day_marks(raw))
+    note = re.sub(r"\s+", " ", raw).strip(" ;,|")
+    if note and re.search(r"[A-Za-z]", note):
+        marks.append({"kind": "note", "day": None, "name": note, "amount": None})
+    return marks
+
+
+def _attach_trailing_job_days(segments: list[list[dict]]) -> None:
+    """When a job segment has no day, use a duplicated last day from the segment before it."""
+    for index in range(len(segments) - 1):
+        left = segments[index]
+        right = segments[index + 1]
+        if len(right) != 1 or right[0]["kind"] != "custom" or right[0].get("day"):
             continue
-        house = _HOUSE_AFTER.match(raw, end)
-        if house:
-            end = house.end()
-        day = int(match.group("day")) if match.group("day") else None
-        jobs.append((
-            start,
-            end,
-            {"kind": "custom", "name": name, "amount": float(match.group("amt")), "day": day},
-        ))
-
-    def covered(start: int, end: int) -> bool:
-        return any(start < job_end and end > job_start for job_start, job_end, _job in jobs)
-
-    marks: list[tuple[int, dict]] = [(start, item) for start, _end, item in jobs]
-    claimed: list[tuple[int, int]] = [(start, end) for start, end, _item in jobs]
-    for match in _DAY_TOKEN.finditer(raw):
-        if covered(match.start(), match.end()):
+        mow_days = [int(m["day"]) for m in left if m["kind"] == "mow" and m.get("day")]
+        if len(mow_days) < 2:
             continue
-        day = int(match.group("day"))
-        if match.group("mark"):
-            marks.append((match.start(), {"kind": "hedge", "day": day, "name": "", "amount": None}))
-        else:
-            marks.append((match.start(), {"kind": "mow", "day": day, "name": "", "amount": None}))
-        claimed.append((match.start(), match.end()))
+        last = mow_days[-1]
+        if mow_days.count(last) < 2:
+            continue
+        right[0]["day"] = last
 
-    claimed.sort()
-    cursor = 0
-    for start, end in claimed:
-        _take_note(raw[cursor:start], marks, cursor)
-        cursor = max(cursor, end)
-    _take_note(raw[cursor:], marks, cursor)
-    marks.sort(key=lambda item: item[0])
-    ordered = [item for _pos, item in marks]
+
+def parse_work_marks(text: str) -> list[dict]:
+    """Split a work cell into mow days, hedge days, priced jobs, and leftover notes."""
+    raw = normalize_work_marks(text)
+    if not raw:
+        return []
+    parts = [part.strip() for part in re.split(r"\s*\|\s*", raw) if part.strip()]
+    if not parts:
+        return []
+    segments = [_parse_chunk(part) for part in parts]
+    _attach_trailing_job_days(segments)
+    marks = [mark for segment in segments for mark in segment]
+    marks = _dedupe_job_mow_days(marks)
     collapsed: list[dict] = []
-    for mark in ordered:
+    for mark in marks:
         if (
             mark["kind"] == "note"
             and re.fullmatch(r"h|hedge|hedging", str(mark.get("name") or "").strip(), re.I)
@@ -162,4 +243,3 @@ def review_boxes(text: str) -> list[str]:
         elif mark.get("name"):
             boxes.append(str(mark["name"]))
     return boxes
-

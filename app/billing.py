@@ -30,7 +30,9 @@ _THANKS = (
 _MOW = re.compile(r"(?i)^mow(?:ing)?(?:\s+(\d{1,2}))?$")
 _HEDGE = re.compile(r"(?i)^hedg(?:e|ing)(?:\s+(\d{1,2}))?$")
 _NOTE_DAY = re.compile(r"(?i)^(\d{1,2})h?$")
-_PRIOR_NOTE = re.compile(r"(?i)^prior(?P<taxed>-taxed)?:(?P<month>.*)$")
+_PRIOR_NOTE = re.compile(
+    r"(?i)^prior(?P<taxed>-taxed)?:(?P<month>\d{4}-\d{2})(?::(?P<day>\d{1,2}))?$",
+)
 _EMAIL = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
 
 
@@ -153,20 +155,38 @@ def _service(line: dict) -> tuple[str, int | None]:
     return desc, day
 
 
-def line_role(line: dict) -> tuple[str, str]:
-    """visit, discount, prior, or prior_taxed, plus the prior month label."""
+def line_role(line: dict) -> tuple[str, str, str]:
+    """visit, discount, prior, or prior_taxed, plus prior month and optional day."""
     note = str(line.get("day_or_note") or "").strip()
     desc = str(line.get("description") or "").strip()
     if note.lower() == "discount" or desc.lower().startswith("discount"):
-        return "discount", ""
+        return "discount", "", ""
     prior = _PRIOR_NOTE.match(note)
     if prior:
         role = "prior_taxed" if prior.group("taxed") else "prior"
-        return role, (prior.group("month") or "").strip()
+        return role, (prior.group("month") or "").strip(), (prior.group("day") or "").strip()
     kind = str(line.get("kind") or "").strip()
     if kind in {"discount", "prior", "prior_taxed"}:
-        return kind, str(line.get("prior_month") or "").strip()
-    return "visit", ""
+        return kind, str(line.get("prior_month") or "").strip(), str(line.get("date") or "").strip()
+    return "visit", "", ""
+
+
+def _visit_day(line: dict) -> int | None:
+    note = str(line.get("day_or_note") or "").strip()
+    noted = _NOTE_DAY.fullmatch(note)
+    if noted:
+        return int(noted.group(1))
+    _label, day = _service(line)
+    return day
+
+
+def _line_date(line: dict) -> str:
+    note = str(line.get("day_or_note") or "").strip()
+    prior = _PRIOR_NOTE.match(note)
+    if prior and prior.group("day"):
+        return prior.group("day")
+    day = _visit_day(line)
+    return str(day) if day is not None else ""
 
 
 def contact_email(row: dict) -> str:
@@ -216,17 +236,28 @@ def compile_invoice_lines(lines: list[dict], month: str) -> list[dict]:
     _letter, _work_name, month_num = _invoice_when(month)
     groups: list[dict] = []
     index: dict[str, dict] = {}
+    prior_items: list[dict] = []
     for line in lines:
-        role, _prior_month = line_role(line)
+        role, prior_month, prior_day = line_role(line)
         label, day = _service(line)
         if not label:
             continue
         if label.lower() in {"sales tax", "total"}:
             continue
+        if role in {"prior", "prior_taxed"} and prior_day:
+            prior_num = int(prior_month.split("-")[1]) if prior_month and "-" in prior_month else None
+            dates = f"{prior_num}/{prior_day}" if prior_num else prior_day
+            prior_items.append({
+                "date": dates,
+                "description": label,
+                "amount": _money(line.get("amount")),
+                "role": role,
+            })
+            continue
         key = f"{role}:{label.casefold()}"
         row = index.get(key)
         if row is None:
-            row = {"description": label, "days": [], "amount": Decimal("0"), "role": role}
+            row = {"description": label, "days": [], "amount": Decimal("0"), "role": role, "unit": None}
             index[key] = row
             groups.append(row)
         if role == "visit" and day is not None and 1 <= day <= 31 and day not in row["days"]:
@@ -234,8 +265,14 @@ def compile_invoice_lines(lines: list[dict], month: str) -> list[dict]:
         piece = _money(line.get("amount"))
         if piece == 0 and label == "Mowing" and line.get("mow_price") not in (None, ""):
             piece = _money(line.get("mow_price"))
+            row["unit"] = piece
         elif piece == 0 and label == "Hedging" and line.get("hedge_price") not in (None, ""):
             piece = _money(line.get("hedge_price"))
+            row["unit"] = piece
+        elif label == "Mowing" and line.get("mow_price") not in (None, ""):
+            row["unit"] = _money(line.get("mow_price"))
+        elif label == "Hedging" and line.get("hedge_price") not in (None, ""):
+            row["unit"] = _money(line.get("hedge_price"))
         row["amount"] += piece
     table = []
     taxable = Decimal("0")
@@ -243,6 +280,13 @@ def compile_invoice_lines(lines: list[dict], month: str) -> list[dict]:
     taxed_rows = []
     for row in groups:
         amount = row["amount"].quantize(_MONEY, rounding=ROUND_HALF_UP)
+        if (
+            row.get("unit") is not None
+            and row["days"]
+            and row["description"] in {"Mowing", "Hedging"}
+            and amount == 0
+        ):
+            amount = (row["unit"] * len(row["days"])).quantize(_MONEY, rounding=ROUND_HALF_UP)
         if row["role"] == "discount":
             amount = -abs(amount)
         days = sorted(row["days"])
@@ -260,6 +304,13 @@ def compile_invoice_lines(lines: list[dict], month: str) -> list[dict]:
         else:
             table.append(printed)
             taxable += amount
+    for printed in prior_items:
+        if printed["role"] == "prior_taxed":
+            taxed_rows.append(printed)
+            after_tax += printed["amount"]
+        else:
+            table.append(printed)
+            taxable += printed["amount"]
     tax = (taxable * _TAX_RATE).quantize(_MONEY, rounding=ROUND_HALF_UP)
     total = (taxable + tax + after_tax).quantize(_MONEY, rounding=ROUND_HALF_UP)
     table.append({"date": "", "description": "Sales tax", "amount": tax})
@@ -394,7 +445,7 @@ def _reprice_visits(conn, lines: list[dict]) -> list[dict]:
     seen: set[tuple[str, int]] = set()
     kept: list[dict] = []
     for line in lines:
-        role, _prior = line_role(line)
+        role, _prior, _prior_day = line_role(line)
         if role != "visit":
             kept.append(line)
             continue
@@ -613,11 +664,15 @@ def get_editable_bill(conn, month: str, client_id: int) -> dict | None:
             {"date": row["date"], "description": row["description"], "amount": float(row["amount"])}
             for row in compile_invoice_lines(lines, month)
         ],
+        "roster_email": client.get("email") or "",
+        "roster_phone": client.get("phone") or "",
+        "roster_address": client.get("address") or "",
+        "roster_delivery": delivery_channel(client),
     }
 
 
 def _editor_line(ln: dict) -> dict:
-    role, prior_month = line_role(ln)
+    role, prior_month, prior_day = line_role(ln)
     amount = float(ln["amount"]) if ln.get("amount") is not None else 0.0
     return {
         "id": int(ln["id"]),
@@ -625,19 +680,30 @@ def _editor_line(ln: dict) -> dict:
         "amount": amount,
         "kind": role,
         "prior_month": prior_month,
+        "date": prior_day or _line_date(ln),
     }
 
 
 def _note_for_line(ln: dict, existing: dict | None) -> str | None:
-    role = str(ln.get("kind") or "").strip() or line_role(ln)[0]
-    prior_month = str(ln.get("prior_month") or "").strip()
+    role, prior_month, prior_day = line_role(ln)
+    if str(ln.get("kind") or "").strip():
+        role = str(ln.get("kind") or "").strip()
+        prior_month = str(ln.get("prior_month") or prior_month).strip()
+        prior_day = str(ln.get("date") or prior_day).strip()
     desc = str(ln.get("description") or "").strip()
+    date = str(ln.get("date") or prior_day or "").strip().rstrip("hH")
     if role == "discount" or desc.lower().startswith("discount"):
         return "discount"
     if role == "prior_taxed":
-        return f"prior-taxed:{prior_month}"
+        base = f"prior-taxed:{prior_month}"
+        return f"{base}:{date}" if date else base
     if role == "prior":
-        return f"prior:{prior_month}"
+        base = f"prior:{prior_month}"
+        return f"{base}:{date}" if date else base
+    if date:
+        if re.search(r"(?i)hedg", desc):
+            return f"{date}h"
+        return date
     if existing and existing.get("day_or_note"):
         return existing.get("day_or_note")
     return None
@@ -646,8 +712,9 @@ def _note_for_line(ln: dict, existing: dict | None) -> str | None:
 def save_editable_bill(conn, month: str, client_id: int, *, email: str, address: str,
                        lines: list[dict], intro: str | None = None, phone: str | None = None,
                        delivery: str | None = None, greeting: str | None = None,
-                       closing: str | None = None, signoff: str | None = None) -> dict:
-    """Update client + work lines, regenerate PDF, return updated edit payload."""
+                       closing: str | None = None, signoff: str | None = None,
+                       save_to_client: bool = True) -> dict:
+    """Update work lines, regenerate PDF, and optionally update the client list."""
     from . import db
 
     client = db.get_client(conn, client_id)
@@ -656,15 +723,20 @@ def save_editable_bill(conn, month: str, client_id: int, *, email: str, address:
     choice = str(delivery or "").strip().lower()
     if choice not in {"email", "sms", "mail"}:
         choice = delivery_channel(client)
-    db.update_client_contact(
-        conn,
-        client_id,
-        email=email or None,
-        address=address or None,
-        phone=phone or None,
-        delivery=choice,
-        prefer_mail=choice == "mail",
-    )
+    email_text = str(email or "").strip()
+    phone_text = str(phone or "").strip()
+    address_text = str(address or "").strip()
+    roster_delivery = delivery_channel(client)
+    if save_to_client:
+        db.update_client_contact(
+            conn,
+            client_id,
+            email=email_text or None,
+            address=address_text or None,
+            phone=phone_text or None,
+            delivery=choice,
+            prefer_mail=choice == "mail",
+        )
 
     stored = {int(r["id"]): r for r in db.work_for_client_month(conn, month, client_id)}
     existing_ids = set(stored)
@@ -708,10 +780,10 @@ def save_editable_bill(conn, month: str, client_id: int, *, email: str, address:
     pdf = build_pdf_bytes(
         company=config.COMPANY_NAME,
         client_name=shown,
-        address=client.get("address") or "",
+        address=address_text or client.get("address") or "",
         month=month,
         lines=rows,
-        email=client.get("email") or "",
+        email=email_text or client.get("email") or "",
         intro=intro,
         greeting=greeting,
         closing=closing,
@@ -728,13 +800,23 @@ def save_editable_bill(conn, month: str, client_id: int, *, email: str, address:
         closing=stored_letter(closing, default_closing()),
         signoff=stored_letter(signoff, default_signoff()),
     )
-    db.set_bill_face(
-        conn,
-        bid,
-        display_name=str(letter.get("display_name") or "").strip() or None,
-        bill_email=None,
-        bill_delivery=None,
-    )
+    if save_to_client:
+        db.set_bill_face(
+            conn,
+            bid,
+            display_name=str(letter.get("display_name") or "").strip() or None,
+            bill_email=None,
+            bill_delivery=None,
+        )
+    else:
+        roster_email = str(client.get("email") or "").strip()
+        db.set_bill_face(
+            conn,
+            bid,
+            display_name=str(letter.get("display_name") or "").strip() or None,
+            bill_email=None if email_text == roster_email else email_text,
+            bill_delivery=None if choice == roster_delivery else choice,
+        )
     return {
         "bill_id": bid,
         "client_id": client_id,
@@ -874,7 +956,7 @@ def tax_client_figures(lines: list[dict]) -> dict:
     prior_notes: list[str] = []
     prior_taxed_notes: list[str] = []
     for line in lines:
-        role, prior_month = line_role(line)
+        role, prior_month, _prior_day = line_role(line)
         label, _day = _service(line)
         if not label or label.lower() in {"sales tax", "total"}:
             continue
