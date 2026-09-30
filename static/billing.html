@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Work — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=29"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=30"/>
 </head>
 <body>
 <header class="top">
@@ -21,9 +21,38 @@
   <div id="progressBars" class="progress-bars"></div>
 </header>
 
-<main class="flow">
-  <h1>Work</h1>
-  <p class="hint">Upload the sheet, review it, then generate the bills. Each step shows up under the one before it.</p>
+<main class="split-data">
+  <div class="data-col data-col-clients">
+  <section class="card chat-card">
+    <div class="chat-header">
+      <div class="chat-header-top">
+        <h2>Chat with your data</h2>
+        <button type="button" id="btnClearChat" class="secondary chat-clear">Clear chat</button>
+      </div>
+      <p class="hint">Ask questions or update clients, work, and bills. Model must be loaded.</p>
+    </div>
+    <div id="chatLog" class="chat-log" aria-live="polite">
+      <div class="chat-empty" id="chatEmpty">
+        <p>Start a conversation about your billing data.</p>
+        <div class="chat-suggestions">
+          <button type="button" class="chip" data-suggest="Who was billed in 2025-09 without an email?">Who needs a mailed bill?</button>
+          <button type="button" class="chip" data-suggest="List clients and their mow prices">List mow prices</button>
+          <button type="button" class="chip" data-suggest="Show work items for this month">Show recent work</button>
+        </div>
+      </div>
+    </div>
+    <form id="chatForm" class="chat-composer" action="#" method="post">
+      <textarea id="chatInput" rows="1" placeholder="Message your data…" enterkeyhint="send"></textarea>
+      <button type="submit" id="btnChat" class="chat-send" title="Send">Send</button>
+    </form>
+    <p class="msg chat-status" id="chatMsg"></p>
+  </section>
+  </div>
+  <div class="data-col data-col-work">
+  <div class="data-intro">
+    <h1>Work</h1>
+    <p class="hint">Upload the sheet, review it, then generate the bills. Each step shows up under the one before it.</p>
+  </div>
 
   <section class="card" id="stepUpload">
     <p class="step-kicker">Step 1</p>
@@ -100,6 +129,9 @@
       <div id="viewerStack" class="pdf-stack"></div>
     </div>
   </section>
+  </div>
+  <div class="col-resize left" role="separator" aria-orientation="vertical" aria-label="Resize chat"></div>
+  <div class="col-resize right" role="separator" aria-orientation="vertical" aria-label="Resize middle windows"></div>
 </main>
 
 <script src="/static/js/app.js?v=13"></script>
@@ -575,6 +607,57 @@ function sendChat() {
     setChatBusy(false);
   });
 }
+
+el("chatForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  sendChat();
+});
+el("chatInput").addEventListener("keydown", (e) => {
+  const isEnter = e.key === "Enter" || e.keyCode === 13;
+  if (isEnter && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    e.stopPropagation();
+    sendChat();
+  }
+});
+el("chatInput").addEventListener("input", () => {
+  const t = el("chatInput");
+  t.style.height = "auto";
+  t.style.height = Math.min(t.scrollHeight, 140) + "px";
+});
+el("btnClearChat").onclick = () => {
+  chatHistory = [];
+  const log = el("chatLog");
+  log.innerHTML = `
+    <div class="chat-empty" id="chatEmpty">
+      <p>Start a conversation about your billing data.</p>
+      <div class="chat-suggestions">
+        <button type="button" class="chip" data-suggest="Who was billed in 2025-09 without an email?">Who needs a mailed bill?</button>
+        <button type="button" class="chip" data-suggest="List clients and their mow prices">List mow prices</button>
+        <button type="button" class="chip" data-suggest="Show work items for this month">Show recent work</button>
+      </div>
+    </div>`;
+  log.querySelectorAll("[data-suggest]").forEach(btn => {
+    btn.onclick = () => {
+      el("chatInput").value = btn.getAttribute("data-suggest");
+      el("chatInput").focus();
+      sendChat();
+    };
+  });
+  el("chatMsg").textContent = "";
+  el("chatMsg").className = "msg chat-status";
+  el("chatInput").value = "";
+  el("chatInput").style.height = "auto";
+  setChatBusy(false);
+  el("chatInput").focus();
+};
+document.querySelectorAll("[data-suggest]").forEach(btn => {
+  btn.onclick = () => {
+    el("chatInput").value = btn.getAttribute("data-suggest");
+    el("chatInput").focus();
+    sendChat();
+  };
+});
 
 el("btnUpload").onclick = async () => {
   const month = el("month").value;

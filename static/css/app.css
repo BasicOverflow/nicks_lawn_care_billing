@@ -136,6 +136,12 @@ main.split-data {
 main.split-data > .data-intro { grid-column: 2; width: min(100%, var(--work-col)); justify-self: center; }
 main.split-data > .data-col { min-width: 0; }
 main.split-data > .data-col-clients { grid-column: 1; width: 100%; }
+main.split-data > .data-col-clients .chat-card {
+  position: sticky;
+  top: .75rem;
+  height: calc(100vh - 5.5rem);
+  max-height: calc(100vh - 5.5rem);
+}
 main.split-data > .data-col-work { grid-column: 2; width: min(100%, var(--work-col)); justify-self: center; }
 .col-resize {
   position: absolute;
@@ -497,6 +503,11 @@ td.row-tools { width: 1%; white-space: nowrap; }
     width: auto;
   }
   .col-resize { display: none; }
+  main.split-data > .data-col-clients .chat-card {
+    position: static;
+    height: auto;
+    max-height: 70vh;
+  }
 }
 @media (max-width: 640px) {
   .top { padding: .5rem .35rem; }
