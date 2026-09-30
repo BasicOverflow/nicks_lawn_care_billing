@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,23 +25,44 @@ from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 os.environ.setdefault("NINI_NOVEL", "1")
 
-import importlib.util
-
-_spec = importlib.util.spec_from_file_location(
-    "bench_gemma4_vs_qwen", ROOT / "scripts" / "bench_gemma4_vs_qwen.py"
-)
-_bench = importlib.util.module_from_spec(_spec)
-assert _spec.loader is not None
-_spec.loader.exec_module(_bench)
-
 OUT = ROOT / "bench_results" / "guided_ocr.json"
 CHUNK = int(os.environ.get("NINI_OCR_CHUNK", "4"))
-QWEN_ID = _bench.QWEN_ID
+QWEN_ID = "qwen25-vl-3b"
+SERVE = os.environ.get("RAY_SERVE", "http://10.0.1.52:8000")
 
-load_fixtures = _bench.load_fixtures
-mean = _bench.mean
-model_up = _bench.model_up
-_norm_name = _bench._norm_name
+
+def _norm_name(s: str) -> str:
+    s = (s or "").upper()
+    s = re.sub(r"[^A-Z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def load_fixtures() -> list[dict]:
+    """Work-completed photos only. Rosters and hedge lists are typed, not OCR'd."""
+    idx = json.loads((ROOT / "ground_truth" / "index.json").read_text(encoding="utf-8"))
+    out = []
+    for fx in idx["fixtures"]:
+        if "work" not in str(fx.get("kind") or "").lower():
+            continue
+        img = ROOT / fx["image"]
+        gold_path = ROOT / fx["gold_file"]
+        if not img.is_file() or not gold_path.is_file():
+            continue
+        gold = json.loads(gold_path.read_text(encoding="utf-8"))
+        out.append({"id": fx["id"], "image": img, "gold": gold, "kind": fx.get("kind")})
+    return out
+
+
+def model_up(model_id: str) -> bool:
+    try:
+        with urllib.request.urlopen(f"{SERVE}/{model_id}/v1/models", timeout=8) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def mean(xs: list[float]) -> float:
+    return round(sum(xs) / len(xs), 4) if xs else 0.0
 
 
 def sheet_kind_for(fx: dict) -> str:
@@ -214,36 +236,7 @@ def ensure_qwen() -> float:
     return time.time() - t0
 
 
-def prior_qwen_novel() -> dict:
-    path = ROOT / "bench_results" / "gemma4_vs_qwen.json"
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data.get("qwen") or {}
-    except Exception:
-        return {}
-
-
-def prior_row_groups_qwen() -> dict:
-    path = ROOT / "bench_results" / "row_groups_e4b_vs_qwen.json"
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data.get("qwen") or {}
-    except Exception:
-        return {}
-
-
 def main() -> None:
-    prior_path = ROOT / "bench_results" / "guided_ocr.json"
-    prior_guided = {}
-    if prior_path.is_file():
-        try:
-            prior_guided = json.loads(prior_path.read_text(encoding="utf-8"))
-        except Exception:
-            prior_guided = {}
     import ocr
     from app import db
 
@@ -331,35 +324,13 @@ def main() -> None:
             "mean_infer_s": mean(times),
         }
 
-    models = {
-        p.strip().lower()
-        for p in os.environ.get("NINI_BENCH_MODELS", "qwen,gemma").split(",")
-        if p.strip()
-    }
     print(
-        f"guided OCR bench: {len(fixtures)} fixtures, chunk={CHUNK}, models={sorted(models)}",
+        f"guided OCR bench: {len(fixtures)} fixtures, chunk={CHUNK}",
         flush=True,
     )
-    qwen = prior_guided.get("qwen") if isinstance(prior_guided.get("qwen"), dict) else None
-    if "qwen" in models:
-        deploy_qwen_s = ensure_qwen()
-        qwen = run_model(QWEN_ID, None, "qwen")
-        qwen["deploy_s"] = round(deploy_qwen_s, 2)
-
-    gemma = prior_guided.get("gemma") if isinstance(prior_guided.get("gemma"), dict) else None
-    if "gemma" in models:
-        print("deploying gemma…", flush=True)
-        t_g = time.time()
-        if not model_up(_bench.GEMMA_ID):
-            _bench.deploy_gemma()
-        gemma_cfg = {
-            "id": _bench.GEMMA_ID,
-            "max_output": 4096,
-            "vllm_kwargs": {"max_num_seqs": _bench.GEMMA_MAX_SEQS},
-        }
-        gemma = run_model(_bench.GEMMA_ID, gemma_cfg, "gemma")
-        gemma["model"] = _bench.GEMMA_HF
-        gemma["deploy_s"] = round(time.time() - t_g, 2)
+    deploy_qwen_s = ensure_qwen()
+    qwen = run_model(QWEN_ID, None, "qwen")
+    qwen["deploy_s"] = round(deploy_qwen_s, 2)
 
     result = {
         "mode": "live_office_knowledge",
@@ -367,24 +338,19 @@ def main() -> None:
         "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
         "knowledge": counts,
         "qwen": qwen,
-        "gemma": gemma,
-        "mean_client_recall": (qwen or {}).get("mean_client_recall"),
-        "mean_price_recall": (qwen or {}).get("mean_price_recall"),
-        "mean_infer_s": (qwen or {}).get("mean_infer_s"),
-        "per_image": (qwen or {}).get("per_image") or [],
+        "mean_client_recall": qwen.get("mean_client_recall"),
+        "mean_price_recall": qwen.get("mean_price_recall"),
+        "mean_infer_s": qwen.get("mean_infer_s"),
+        "per_image": qwen.get("per_image") or [],
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps({
         "wrote": str(OUT),
-        "qwen_client": (qwen or {}).get("mean_client_recall"),
-        "qwen_price": (qwen or {}).get("mean_price_recall"),
-        "qwen_days": (qwen or {}).get("row_day_recall"),
-        "qwen_s": (qwen or {}).get("mean_infer_s"),
-        "gemma_days": (gemma or {}).get("row_day_recall"),
-        "gemma_client": (gemma or {}).get("mean_client_recall"),
-        "gemma_price": (gemma or {}).get("mean_price_recall"),
-        "gemma_s": (gemma or {}).get("mean_infer_s"),
+        "qwen_client": qwen.get("mean_client_recall"),
+        "qwen_price": qwen.get("mean_price_recall"),
+        "qwen_days": qwen.get("row_day_recall"),
+        "qwen_s": qwen.get("mean_infer_s"),
     }, indent=2), flush=True)
 
 

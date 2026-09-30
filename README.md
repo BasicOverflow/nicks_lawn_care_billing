@@ -119,10 +119,9 @@ App env: `SMTP_HOST`, `SMTP_PORT=587`, `SMTP_USER` / `SMTP_PASSWORD`, `SMTP_FROM
 ## OCR package
 
 Photos are work-completed sheets only. Mowing prices, hedge prices, and contact
-details are typed on the Data page. Knowledge-guided OCR sends the full photo
-many times in parallel; each request asks the model for a small chunk of
-Postgres-known clients (default 4 names per request). A follow-up pass fills
-missing names and blank date cells. No tile/crop splitting.
+details are typed on the Data page. OCR sends the full photo several times in
+parallel; each request reads the work cell for a small chunk of names written
+on that page (default 4 names per request). No tile/crop splitting.
 
 The OCR benches score `ground_truth/work_completed/` only.
 
@@ -142,5 +141,4 @@ ocr.unload_model()
 ```
 
 Model id is fixed: `qwen25-vl-3b`. Chunk size: `NINI_OCR_CHUNK` (default 4).
-Legacy tile multipass: `ocr.extract_sheet_legacy_multipass(...)`.
 

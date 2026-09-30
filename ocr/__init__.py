@@ -100,54 +100,6 @@ def extract_sheet(
     return obj
 
 
-def extract_sheet_legacy_multipass(
-    image_path: Path | str,
-    *,
-    max_passes: int = 4,
-) -> dict:
-    """Previous novel multipass tile/crop pipeline (benches / fallback)."""
-    _ensure_env()
-    from .pipeline import run_fixture
-
-    path = Path(image_path)
-    if not path.is_file():
-        raise FileNotFoundError(path)
-    fx = {"id": path.stem, "image": str(path)}
-    row = run_fixture(
-        MODEL_ID,
-        dict(MODEL_CFG),
-        fx,
-        max_passes,
-        wave_workers=None,
-        asset_dir=None,
-        image_path=path,
-    )
-    raw = row.get("final_extract") or "{}"
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {"title": None, "tables": [], "notes": [raw[:4000]], "complete": False}
-
-
-def extract_sheet_gemma_rows(
-    image_path: Path | str,
-    *,
-    model_id: str = "gemma4-e2b-ocr",
-    rows_per_crop: int = 3,
-    max_seqs: int = 4,
-) -> dict:
-    """Gemma path: black-grid row groups (2–4 rows/crop) in parallel."""
-    _ensure_env()
-    from .gemma_rows import extract_by_row_groups
-
-    return extract_by_row_groups(
-        model_id,
-        Path(image_path),
-        rows_per_crop=rows_per_crop,
-        max_seqs=max_seqs,
-    )
-
-
 def apply_correction(
     image_path: Path | str | None,
     table_json: dict,
