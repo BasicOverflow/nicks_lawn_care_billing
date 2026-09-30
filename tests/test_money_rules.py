@@ -333,6 +333,21 @@ def test_near_spelling_suggests_the_roster_client():
     assert open_conflicts(other, roster, [])[0]["suggestion"] is None
 
 
+def test_reprice_visits_keeps_a_hand_edited_mow_amount():
+    from app.billing import _reprice_visits
+
+    lines = [
+        {
+            "description": "Mowing 8",
+            "amount": 28,
+            "day_or_note": "8",
+            "mow_price": 32,
+        },
+    ]
+    out = _reprice_visits(None, lines)
+    assert float(out[0]["amount"]) == 28.0
+
+
 def test_editor_accepts_multiple_dates_on_one_line():
     from app.billing import _editable_bill_lines, _work_items_from_editor_line, compile_invoice_lines
 

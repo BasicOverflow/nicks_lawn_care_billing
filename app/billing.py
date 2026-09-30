@@ -495,7 +495,7 @@ def build_pdf_bytes(*, company: str, client_name: str, address: str, month: str,
 
 
 def _reprice_visits(conn, lines: list[dict]) -> list[dict]:
-    """Mowing and hedging use the client's current prices. A day is one visit."""
+    """Fill in mowing/hedging prices only when a visit line is still $0."""
     from . import db
 
     seen: set[tuple[str, int]] = set()
@@ -513,17 +513,17 @@ def _reprice_visits(conn, lines: list[dict]) -> list[dict]:
                     db.delete_work_item(conn, int(line["id"]))
                 continue
             seen.add(key)
+        stored = float(line.get("amount") or 0)
         price = None
         if label == "Mowing":
             price = line.get("mow_price")
         elif label == "Hedging":
             price = line.get("hedge_price")
-        if price is not None and line.get("id"):
+        if price is not None and stored == 0 and line.get("id"):
             amount = float(price)
-            if float(line.get("amount") or 0) != amount:
-                db.update_work_item(
-                    conn, int(line["id"]), description=line.get("description") or label, amount=amount,
-                )
+            db.update_work_item(
+                conn, int(line["id"]), description=line.get("description") or label, amount=amount,
+            )
             line["amount"] = amount
         kept.append(line)
     return kept
