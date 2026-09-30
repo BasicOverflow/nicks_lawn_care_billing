@@ -866,6 +866,34 @@ def _work_cells(obj: dict, columns: list[str]) -> list[list[str]]:
     return rows
 
 
+def _work_text_len(row: list) -> int:
+    return sum(len(str(cell).strip()) for cell in list(row)[1:])
+
+
+def _collapse_work_rows(rows: list[list[str]], columns: list[str]) -> list[list[str]]:
+    """One review line per name.
+
+    Chunks read the whole photo, so the same line often comes back more than once.
+    A later copy replaces the earlier one only when it has more work text.
+    """
+    out: list[list[str]] = []
+    at: dict[str, int] = {}
+    for row in rows:
+        cells = [str(c) for c in row]
+        key = _name_key(_row_name(cells, columns))
+        if not key:
+            out.append(cells)
+            continue
+        prev = at.get(key)
+        if prev is None:
+            at[key] = len(out)
+            out.append(cells)
+            continue
+        if _work_text_len(cells) > _work_text_len(out[prev]):
+            out[prev] = cells
+    return out
+
+
 def _take_work_row(name: str, pool: list[list[str]], columns: list[str]) -> list[str] | None:
     best_i = None
     best = 0
@@ -877,6 +905,22 @@ def _take_work_row(name: str, pool: list[list[str]], columns: list[str]) -> list
     if best_i is None or best < 4:
         return None
     return pool.pop(best_i)
+
+
+def _assemble_work_rows(
+    names: list[str], pool: list[list[str]], columns: list[str]
+) -> list[list[str]]:
+    """Place each sheet name once, then keep a leftover only when it is a new name."""
+    pool = _collapse_work_rows(pool, columns)
+    rows: list[list[str]] = []
+    for name in names:
+        hit = _take_work_row(name, pool, columns)
+        if hit is None:
+            rows.append([name] + [""] * (len(columns) - 1))
+        else:
+            rows.append(hit)
+    rows.extend(pool)
+    return _collapse_work_rows(rows, columns)
 
 
 def _extract_work_sheet(
@@ -925,14 +969,7 @@ def _extract_work_sheet(
                     print(f"  {prefix} work chunk fail: {e}", flush=True)
                     continue
                 pool.extend(_work_cells(got, columns))
-        rows: list[list[str]] = []
-        for name in names:
-            hit = _take_work_row(name, pool, columns)
-            if hit is None:
-                rows.append([name] + [""] * (len(columns) - 1))
-            else:
-                rows.append(hit)
-        rows.extend(pool)
+        rows = _assemble_work_rows(names, pool, columns)
     else:
         try:
             got = _vision(
@@ -942,7 +979,7 @@ def _extract_work_sheet(
                 guided_work_prompt([], columns, header.get("title")),
                 reuse_prepared=True,
             )
-            rows = _work_cells(got, columns)
+            rows = _collapse_work_rows(_work_cells(got, columns), columns)
         except Exception as e:
             print(f"  {prefix} work transcribe fail: {e}", flush=True)
             rows = []

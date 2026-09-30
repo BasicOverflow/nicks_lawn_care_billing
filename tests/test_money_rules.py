@@ -95,3 +95,39 @@ def test_delivery():
     assert contact_email({"email": "", "billing_notes": "see a@b.com"}) == "a@b.com"
     assert delivery_channel({"email": "", "phone": "860", "billing_notes": ""}) == "sms"
     assert delivery_channel({"email": "", "phone": "", "billing_notes": ""}) == "mail"
+
+
+def test_repeated_work_chunk_is_one_review_row():
+    from ocr.guided import _assemble_work_rows
+
+    columns = ["CLIENT", "DATE & WORK COMPLETED"]
+    names = ["SMITH, Mary", "JONES, Ann", "LEE, Pat", "DIAZ, Omar", "NGUYEN, Kim"]
+    once = [
+        ["SMITH, Mary", "9 16"],
+        ["JONES, Ann", "15h"],
+        ["LEE, Pat", "5 bush trimming 50"],
+        ["DIAZ, Omar", "12"],
+        ["NGUYEN, Kim", "3 10"],
+    ]
+    # Two chunks each returned the whole sheet.
+    rows = _assemble_work_rows(names, once + once, columns)
+    assert [row[0] for row in rows] == names
+    assert [row[1] for row in rows] == [row[1] for row in once]
+
+
+def test_richer_copy_wins_and_unmatched_name_stays_once():
+    from ocr.guided import _assemble_work_rows
+
+    columns = ["CLIENT", "DATE & WORK COMPLETED"]
+    names = ["SMITH, Mary"]
+    pool = [
+        ["SMITH, Mary", "9"],
+        ["SMITH, Mary", "9 16 23"],
+        ["ADDED, Bob", "2"],
+        ["ADDED, Bob", "2"],
+    ]
+    rows = _assemble_work_rows(names, pool, columns)
+    assert rows == [
+        ["SMITH, Mary", "9 16 23"],
+        ["ADDED, Bob", "2"],
+    ]
