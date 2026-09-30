@@ -191,6 +191,20 @@ def delivery_channel(row: dict) -> str:
     return "mail"
 
 
+def face_bill(row: dict) -> dict:
+    """Use this month's name, email, and delivery when the bill has its own."""
+    shown = dict(row)
+    name = str(shown.get("display_name") or "").strip()
+    if name:
+        shown["client_name"] = name
+    if shown.get("bill_email") is not None:
+        shown["email"] = shown.get("bill_email") or ""
+    choice = str(shown.get("bill_delivery") or "").strip().lower()
+    if choice in {"email", "sms", "mail"}:
+        shown["delivery"] = choice
+    return shown
+
+
 def compile_invoice_lines(lines: list[dict], month: str) -> list[dict]:
     """Group visits into Date / Description / Price rows, then sales tax and total.
 
@@ -433,9 +447,10 @@ def generate_month_bills(conn, month: str) -> list[dict]:
         m = meta[cid]
         _reprice_visits(conn, lines)
         letter = db.bill_letter(conn, month, cid)
+        shown = str(letter.get("display_name") or "").strip() or m["client_name"]
         pdf = build_pdf_bytes(
             company=config.COMPANY_NAME,
-            client_name=m["client_name"],
+            client_name=shown,
             address=m.get("address") or "",
             month=month,
             lines=lines,
@@ -445,10 +460,10 @@ def generate_month_bills(conn, month: str) -> list[dict]:
             closing=letter.get("closing"),
             signoff=letter.get("signoff"),
         )
-        key = f"bills/{month}/{cid}_{m['client_name'].replace(' ', '_')[:40]}.pdf"
+        key = f"bills/{month}/{cid}_{shown.replace(' ', '_')[:40]}.pdf"
         storage.put_bytes(pdf, key, content_type="application/pdf")
         bid = db.upsert_bill(conn, month=month, client_id=cid, s3_key=key)
-        out.append({"bill_id": bid, "client_id": cid, "client_name": m["client_name"],
+        out.append({"bill_id": bid, "client_id": cid, "client_name": shown,
                     "email": m.get("email"), "s3_key": key})
     return out
 
@@ -467,17 +482,25 @@ def get_editable_bill(conn, month: str, client_id: int) -> dict | None:
         """,
         (month, client_id),
     ).fetchone()
+    shown_name = client["name"]
+    if bill and str(bill.get("display_name") or "").strip():
+        shown_name = str(bill.get("display_name")).strip()
+    bill_choice = str(bill.get("bill_delivery") or "").strip().lower() if bill else ""
+    if bill and bill.get("bill_email") is not None:
+        shown_email = bill.get("bill_email") or ""
+    else:
+        shown_email = client.get("email") or ""
     return {
         "month": month,
         "client_id": client_id,
-        "client_name": client["name"],
-        "email": client.get("email") or "",
+        "client_name": shown_name,
+        "email": shown_email,
         "phone": client.get("phone") or "",
         "address": client.get("address") or "",
-        "delivery": delivery_channel(client),
+        "delivery": bill_choice if bill_choice in {"email", "sms", "mail"} else delivery_channel(client),
         "s3_key": bill["s3_key"] if bill else None,
         "bill_id": bill["id"] if bill else None,
-        "greeting": letter_or_default(bill.get("greeting") if bill else None, default_greeting(client["name"])),
+        "greeting": letter_or_default(bill.get("greeting") if bill else None, default_greeting(shown_name)),
         "intro": invoice_sentence(month, bill.get("cover_note") if bill else None),
         "closing": letter_or_default(bill.get("closing") if bill else None, default_closing()),
         "signoff": letter_or_default(bill.get("signoff") if bill else None, default_signoff()),
@@ -576,9 +599,11 @@ def save_editable_bill(conn, month: str, client_id: int, *, email: str, address:
         row["mow_price"] = client.get("mow_price")
         row["hedge_price"] = client.get("hedge_price")
     _reprice_visits(conn, rows)
+    letter = db.bill_letter(conn, month, client_id)
+    shown = str(letter.get("display_name") or "").strip() or client["name"]
     pdf = build_pdf_bytes(
         company=config.COMPANY_NAME,
-        client_name=client["name"],
+        client_name=shown,
         address=client.get("address") or "",
         month=month,
         lines=rows,
@@ -588,24 +613,133 @@ def save_editable_bill(conn, month: str, client_id: int, *, email: str, address:
         closing=closing,
         signoff=signoff,
     )
-    key = f"bills/{month}/{client_id}_{client['name'].replace(' ', '_')[:40]}.pdf"
+    key = f"bills/{month}/{client_id}_{shown.replace(' ', '_')[:40]}.pdf"
     storage.put_bytes(pdf, key, content_type="application/pdf")
     bid = db.upsert_bill(conn, month=month, client_id=client_id, s3_key=key)
     db.set_bill_letter(
         conn,
         bid,
         note=stored_letter(intro, invoice_sentence(month)),
-        greeting=stored_letter(greeting, default_greeting(client["name"])),
+        greeting=stored_letter(greeting, default_greeting(shown)),
         closing=stored_letter(closing, default_closing()),
         signoff=stored_letter(signoff, default_signoff()),
+    )
+    db.set_bill_face(
+        conn,
+        bid,
+        display_name=str(letter.get("display_name") or "").strip() or None,
+        bill_email=None,
+        bill_delivery=None,
     )
     return {
         "bill_id": bid,
         "client_id": client_id,
-        "client_name": client["name"],
+        "client_name": shown,
         "email": client.get("email"),
         "s3_key": key,
         "month": month,
+    }
+
+
+def apply_bill_face(
+    conn,
+    month: str,
+    client_id: int,
+    *,
+    name: str,
+    email: str,
+    delivery: str,
+    save_to_client: bool,
+) -> dict:
+    """Rebuild this month's PDF from the list. Keep the client list unless asked."""
+    from . import db
+
+    client = db.get_client(conn, client_id)
+    if not client:
+        raise ValueError("Client was not found")
+    bill = conn.execute(
+        """
+        SELECT * FROM bills WHERE month = %s AND client_id = %s
+        ORDER BY id DESC LIMIT 1
+        """,
+        (month, client_id),
+    ).fetchone()
+    if not bill:
+        raise ValueError("There is no bill for this month yet")
+    shown = " ".join(str(name or "").split())
+    if not shown:
+        raise ValueError("Enter a name")
+    choice = str(delivery or "").strip().lower()
+    if choice not in {"email", "sms", "mail"}:
+        raise ValueError("Delivery must be email, SMS, or paper")
+    email_text = str(email or "").strip()
+    if save_to_client:
+        other = db.get_client_by_name(conn, shown)
+        if other and int(other["id"]) != int(client_id):
+            raise ValueError(f"{shown} is already on the client list")
+        db.update_client_contact(
+            conn,
+            client_id,
+            email=email_text or None,
+            address=client.get("address"),
+            name=shown,
+            phone=client.get("phone"),
+            delivery=choice,
+            prefer_mail=choice == "mail",
+        )
+        db.set_bill_face(conn, int(bill["id"]), display_name=None, bill_email=None, bill_delivery=None)
+    else:
+        roster_name = str(client.get("name") or "").strip()
+        roster_email = str(client.get("email") or "").strip()
+        roster_delivery = delivery_channel(client)
+        db.set_bill_face(
+            conn,
+            int(bill["id"]),
+            display_name=None if shown == roster_name else shown,
+            bill_email=None if email_text == roster_email else email_text,
+            bill_delivery=None if choice == roster_delivery else choice,
+        )
+    rows = [dict(row) for row in db.work_for_client_month(conn, month, client_id)]
+    priced = db.get_client(conn, client_id) or client
+    for row in rows:
+        row["mow_price"] = priced.get("mow_price")
+        row["hedge_price"] = priced.get("hedge_price")
+    letter = db.bill_letter(conn, month, client_id)
+    greeting = letter.get("greeting")
+    if not _letter_text(greeting) or _letter_text(greeting) == _letter_text(default_greeting(client.get("name") or "")):
+        greeting = None
+        db.set_bill_letter(
+            conn,
+            int(bill["id"]),
+            note=letter.get("cover_note"),
+            greeting=None,
+            closing=letter.get("closing"),
+            signoff=letter.get("signoff"),
+        )
+    pdf = build_pdf_bytes(
+        company=config.COMPANY_NAME,
+        client_name=shown,
+        address=priced.get("address") or "",
+        month=month,
+        lines=rows,
+        email=email_text,
+        intro=letter.get("cover_note"),
+        greeting=greeting,
+        closing=letter.get("closing"),
+        signoff=letter.get("signoff"),
+    )
+    key = f"bills/{month}/{client_id}_{shown.replace(' ', '_')[:40]}.pdf"
+    storage.put_bytes(pdf, key, content_type="application/pdf")
+    bid = db.upsert_bill(conn, month=month, client_id=client_id, s3_key=key)
+    return {
+        "bill_id": bid,
+        "client_id": client_id,
+        "client_name": shown,
+        "email": email_text,
+        "delivery": choice,
+        "s3_key": key,
+        "month": month,
+        "saved_to_client": bool(save_to_client),
     }
 
 

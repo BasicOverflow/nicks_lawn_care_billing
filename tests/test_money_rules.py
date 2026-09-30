@@ -147,6 +147,33 @@ def test_delivery():
     assert delivery_channel({"delivery": "email", "phone": "860"}) == "email"
 
 
+def test_bill_face_uses_this_months_name_email_and_delivery():
+    from app.billing import delivery_channel, face_bill
+
+    row = face_bill({
+        "client_name": "SMITH, Mary",
+        "email": "mary@example.com",
+        "delivery": "email",
+        "display_name": "SMITH, Marie",
+        "bill_email": "",
+        "bill_delivery": "mail",
+        "prefer_mail": False,
+    })
+    assert row["client_name"] == "SMITH, Marie"
+    assert row["email"] == ""
+    assert delivery_channel(row) == "mail"
+    plain = face_bill({
+        "client_name": "SMITH, Mary",
+        "email": "mary@example.com",
+        "phone": "",
+        "prefer_mail": False,
+        "bill_email": None,
+        "bill_delivery": None,
+    })
+    assert plain["client_name"] == "SMITH, Mary"
+    assert delivery_channel(plain) == "email"
+
+
 def test_repeated_work_chunk_is_one_review_row():
     from ocr.guided import _assemble_work_rows
 

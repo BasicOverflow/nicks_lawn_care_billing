@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS bills (
   greeting TEXT,
   closing TEXT,
   signoff TEXT,
+  display_name TEXT,
+  bill_email TEXT,
+  bill_delivery TEXT,
   emailed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -88,6 +91,9 @@ _MIGRATIONS = (
     "ALTER TABLE bills ADD COLUMN IF NOT EXISTS greeting TEXT",
     "ALTER TABLE bills ADD COLUMN IF NOT EXISTS closing TEXT",
     "ALTER TABLE bills ADD COLUMN IF NOT EXISTS signoff TEXT",
+    "ALTER TABLE bills ADD COLUMN IF NOT EXISTS display_name TEXT",
+    "ALTER TABLE bills ADD COLUMN IF NOT EXISTS bill_email TEXT",
+    "ALTER TABLE bills ADD COLUMN IF NOT EXISTS bill_delivery TEXT",
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS delivery TEXT",
 )
 
@@ -526,13 +532,34 @@ def set_bill_letter(
 def bill_letter(conn, month: str, client_id: int) -> dict:
     row = conn.execute(
         """
-        SELECT cover_note, greeting, closing, signoff FROM bills
+        SELECT cover_note, greeting, closing, signoff, display_name FROM bills
         WHERE month = %s AND client_id = %s
         ORDER BY id DESC LIMIT 1
         """,
         (month, client_id),
     ).fetchone()
     return dict(row) if row else {}
+
+
+def set_bill_face(
+    conn,
+    bill_id: int,
+    *,
+    display_name: str | None,
+    bill_email: str | None,
+    bill_delivery: str | None,
+) -> None:
+    """NULL means this month's bill uses the client list. A value is for this bill only."""
+    conn.execute(
+        """
+        UPDATE bills SET
+          display_name = %s,
+          bill_email = %s,
+          bill_delivery = %s
+        WHERE id = %s
+        """,
+        (display_name, bill_email, bill_delivery, bill_id),
+    )
 
 
 def save_bill(conn, *, month: str, client_id: int, s3_key: str) -> int:
@@ -546,10 +573,10 @@ def save_bill(conn, *, month: str, client_id: int, s3_key: str) -> int:
 
 
 def bills_for_month(conn, month: str) -> list[dict]:
-    from .billing import _retarget_month_clients
+    from .billing import _retarget_month_clients, delivery_channel, face_bill
 
     _retarget_month_clients(conn, month)
-    return list(
+    rows = list(
         conn.execute(
             """
             SELECT b.*, c.name AS client_name, c.email, c.phone, c.billing_notes,
@@ -564,6 +591,18 @@ def bills_for_month(conn, month: str) -> list[dict]:
             (month,),
         ).fetchall()
     )
+    faced = []
+    for row in rows:
+        item = dict(row)
+        roster_name = item.get("client_name") or ""
+        roster_email = item.get("email") or ""
+        roster_delivery = delivery_channel(item)
+        shown = face_bill(item)
+        shown["roster_name"] = roster_name
+        shown["roster_email"] = roster_email
+        shown["roster_delivery"] = roster_delivery
+        faced.append(shown)
+    return faced
 
 
 def work_for_client_month(conn, month: str, client_id: int) -> list[dict]:

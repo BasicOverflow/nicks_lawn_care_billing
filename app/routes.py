@@ -26,6 +26,7 @@ from .schemas import (
     GenerateBills,
     ClientEmail,
     ClientRoster,
+    BillFace,
     ManualWork,
     ReviewDraft,
     ModelStatus,
@@ -690,9 +691,38 @@ def billing_list(
                 "emailed_at": b["emailed_at"].isoformat() if b.get("emailed_at") else None,
                 "has_email": channel == "email",
                 "delivery": channel,
+                "roster_name": b.get("roster_name") or b["client_name"],
+                "roster_email": b.get("roster_email") or "",
+                "roster_delivery": b.get("roster_delivery") or channel,
                 "lines": detail.get("lines") or [],
             })
         return {"bills": out, "smtp_configured": emailer.smtp_configured()}
+
+
+@router.post("/billing/{month}/face/{client_id}", tags=["billing"])
+def billing_face(
+    month: str = ApiPath(..., description="Billing month, YYYY-MM."),
+    client_id: int = ApiPath(..., description="Numeric client id."),
+    body: BillFace = ...,
+):
+    """Update this month's bill name, email, and delivery, then rebuild the PDF.
+
+    The client list changes only when `save_to_client` is true.
+    """
+    try:
+        with db.connect() as conn:
+            saved = billing.apply_bill_face(
+                conn,
+                month,
+                client_id,
+                name=body.name,
+                email=body.email,
+                delivery=body.delivery,
+                save_to_client=body.save_to_client,
+            )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, "bill": saved}
 
 
 @router.get("/billing/{month}/tax.tsv", tags=["billing"])

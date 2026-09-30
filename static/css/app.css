@@ -308,6 +308,14 @@ td.row-tools { width: 1%; white-space: nowrap; }
 .conflict-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem .7rem; }
 .conflict-choice { margin: .45rem 0 .2rem; }
 .conflict-details[hidden] { display: none !important; }
+#billList input.bill-name,
+#billList input.bill-email,
+#billList select.bill-delivery {
+  width: 100%;
+  min-width: 8rem;
+  max-width: 18rem;
+}
+#billList td { vertical-align: middle; }
 .ed-intro, .ed-greeting, .ed-closing, .ed-signoff { width: 100%; min-height: 3.2rem; }
 .ed-closing { min-height: 5.5rem; }
 .ed-delivery { border: 0; margin: .35rem 0 .2rem; padding: 0; }

@@ -149,6 +149,18 @@ class ClientEmail(BaseModel):
     email: str = Field("", description="Email addresses. Blank clears the field.")
 
 
+class BillFace(BaseModel):
+    """Name, email, and delivery for one month's bill."""
+
+    name: str = Field("", description="Name printed on this bill.")
+    email: str = Field("", description="Email addresses for this bill. Blank clears them.")
+    delivery: str = Field("", description="email, sms, or mail.")
+    save_to_client: bool = Field(
+        False,
+        description="Also write the name, email, and delivery onto the client list.",
+    )
+
+
 class SaveBill(BaseModel):
     """Replacement contact info and line items for one client's bill."""
 

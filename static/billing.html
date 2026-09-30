@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Work — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=35"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=36"/>
 </head>
 <body>
 <header class="top">
@@ -103,7 +103,7 @@
   <section class="card" id="stepBills" hidden>
     <p class="step-kicker">Step 3</p>
     <h2>Bills</h2>
-    <p class="hint">Generate PDFs for the month above, then email or download them.</p>
+    <p class="hint">Generate PDFs for the month above, then email or download them. Name, email, and delivery in the list can be edited. The PDF updates, and you can save that change on the client list.</p>
     <div class="row-actions">
       <button type="button" id="btnGenerate">Generate PDFs</button>
       <button type="button" id="btnRefresh" class="secondary">Refresh list</button>
@@ -1765,11 +1765,15 @@ async function refreshBills() {
     }
     let html = "<table><thead><tr><th>Client</th><th>Email</th><th>Delivery</th><th>View</th><th>Emailed</th></tr></thead><tbody>";
     lastBills.forEach((b, i) => {
-      const delivery = DELIVERY_LABEL[b.delivery] || (b.has_email ? "email" : "paper");
+      const delivery = b.delivery || "mail";
+      const options = ["email", "sms", "mail"].map(value => {
+        const selected = value === delivery ? " selected" : "";
+        return `<option value="${value}"${selected}>${DELIVERY_LABEL[value]}</option>`;
+      }).join("");
       html += `<tr data-bill="${i}">
-        <td>${escapeHtml(b.client_name)}</td>
+        <td><input class="bill-name" type="text" value="${escapeAttr(b.client_name || "")}" data-bill="${i}"/></td>
         <td><input class="bill-email" type="text" value="${escapeAttr(b.email || "")}" data-bill="${i}"/></td>
-        <td class="bill-delivery">${delivery}</td>
+        <td><select class="bill-delivery" data-bill="${i}">${options}</select></td>
         <td><button type="button" class="linkish" data-view="${i}">View</button></td>
         <td>${b.emailed_at ? "yes" : "no"}</td>
       </tr>`;
@@ -1785,30 +1789,66 @@ async function refreshBills() {
         if (b) showViewer([b], b.client_name);
       };
     });
-    wrap.querySelectorAll(".bill-email").forEach(input => {
-      input.addEventListener("change", async () => {
-        const bill = lastBills[Number(input.dataset.bill)];
-        if (!bill) return;
-        const row = input.closest("tr");
-        try {
-          const r = await api(`/api/clients/${bill.client_id}/email`, {
-            method: "POST",
-            headers: {"Content-Type":"application/json"},
-            body: JSON.stringify({ email: input.value }),
-          });
-          bill.email = (r.client && r.client.email) || "";
-          bill.delivery = r.delivery;
-          bill.has_email = r.delivery === "email";
-          const cell = row && row.querySelector(".bill-delivery");
-          if (cell) cell.textContent = DELIVERY_LABEL[r.delivery] || r.delivery;
-        } catch (e) {
-          input.value = bill.email || "";
-          alert(e.message);
-        }
-      });
+    wrap.querySelectorAll(".bill-name, .bill-email, .bill-delivery").forEach(input => {
+      input.addEventListener("change", () => saveBillFace(input.closest("tr")));
     });
   } catch (e) {
     el("billList").innerHTML = `<p class='msg err'>${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function saveBillFace(rowEl) {
+  if (!rowEl) return;
+  const bill = lastBills[Number(rowEl.dataset.bill)];
+  if (!bill) return;
+  const nameInput = rowEl.querySelector(".bill-name");
+  const emailInput = rowEl.querySelector(".bill-email");
+  const deliveryInput = rowEl.querySelector(".bill-delivery");
+  const name = nameInput.value.trim();
+  const email = emailInput.value.trim();
+  const delivery = deliveryInput.value;
+  const restore = () => {
+    nameInput.value = bill.client_name || "";
+    emailInput.value = bill.email || "";
+    deliveryInput.value = bill.delivery || "mail";
+  };
+  if (!name) {
+    alert("Enter a name.");
+    restore();
+    return;
+  }
+  if (name === (bill.client_name || "") && email === (bill.email || "") && delivery === (bill.delivery || "")) return;
+  const rosterName = bill.roster_name || bill.client_name || "";
+  const rosterEmail = bill.roster_email || "";
+  const rosterDelivery = bill.roster_delivery || bill.delivery || "";
+  let saveToClient = false;
+  if (name !== rosterName || email !== rosterEmail || delivery !== rosterDelivery) {
+    saveToClient = window.confirm(
+      "Also save this name, email, and delivery on the client list?\n\nOK updates the client list. Cancel updates this month's bill only."
+    );
+  }
+  const month = el("month").value;
+  try {
+    const saved = await api(`/api/billing/${encodeURIComponent(month)}/face/${encodeURIComponent(bill.client_id)}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        name,
+        email,
+        delivery,
+        save_to_client: saveToClient,
+      }),
+    });
+    const frame = document.querySelector(`.pdf-block[data-client-id="${bill.client_id}"] .pdf-frame`);
+    if (frame && saved.bill && saved.bill.s3_key) frame.src = pdfUrl(saved.bill.s3_key);
+    el("genMsg").textContent = saveToClient
+      ? "PDF updated, and the client list was saved."
+      : "PDF updated for this month.";
+    el("genMsg").className = "msg ok";
+    refreshBills();
+  } catch (e) {
+    restore();
+    alert(e.message);
   }
 }
 
