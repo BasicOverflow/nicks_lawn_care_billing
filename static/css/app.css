@@ -113,7 +113,13 @@ main.flow {
   padding: 1rem 1.25rem 2.5rem;
 }
 main.clients-page {
+  --clients-window: 78vw;
+  position: relative;
   padding: .75rem 1rem 2.5rem;
+}
+main.clients-page > .clients-window {
+  width: min(var(--clients-window), 100%);
+  margin: 0 auto;
 }
 .step-kicker {
   margin: 0 0 .2rem;
@@ -510,6 +516,7 @@ td.row-tools { width: 1%; white-space: nowrap; }
     width: auto;
   }
   .col-resize { display: none; }
+  main.clients-page > .clients-window { width: auto; }
   main.split-data > .data-col-clients .chat-card {
     position: static;
     height: auto;

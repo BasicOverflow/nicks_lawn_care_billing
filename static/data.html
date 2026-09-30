@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Clients — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=29"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=34"/>
 </head>
 <body>
 <header class="top">
@@ -22,6 +22,7 @@
 </header>
 
 <main class="clients-page">
+  <div class="clients-window">
   <h1>Clients</h1>
   <p class="hint">Names, addresses, phones, emails, mowing prices, and hedge prices. A blank price clears that price. Save writes every row, including ones hidden by the search.</p>
   <section class="card" id="rosterCard">
@@ -34,6 +35,9 @@
     </div>
     <p class="msg" id="clientMsg"></p>
   </section>
+  </div>
+  <div class="col-resize left" role="separator" aria-orientation="vertical" aria-label="Resize clients"></div>
+  <div class="col-resize right" role="separator" aria-orientation="vertical" aria-label="Resize clients"></div>
 </main>
 <script src="/static/js/app.js?v=14"></script>
 <script>
@@ -220,6 +224,67 @@ el("btnSaveClients").onclick = async () => {
   }
 };
 loadClients();
+
+(function () {
+  const main = document.querySelector("main.clients-page");
+  if (!main) return;
+  const win = main.querySelector(".clients-window");
+  const leftBar = main.querySelector(".col-resize.left");
+  const rightBar = main.querySelector(".col-resize.right");
+  const saved = localStorage.getItem("nicks-clients-window");
+  if (saved && /^\d+px$/.test(saved)) main.style.setProperty("--clients-window", saved);
+
+  function innerWidth() {
+    const style = getComputedStyle(main);
+    const pad = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+    return Math.max(320, main.clientWidth - pad);
+  }
+  function setWidth(px) {
+    const width = Math.round(Math.min(innerWidth(), Math.max(520, px)));
+    const value = width + "px";
+    main.style.setProperty("--clients-window", value);
+    localStorage.setItem("nicks-clients-window", value);
+  }
+  function placeBars() {
+    if (!win) return;
+    const box = main.getBoundingClientRect();
+    const rect = win.getBoundingClientRect();
+    if (leftBar) leftBar.style.left = (rect.left - box.left) + "px";
+    if (rightBar) rightBar.style.left = (rect.right - box.left) + "px";
+  }
+  function drag(bar, fromLeft) {
+    bar.addEventListener("pointerdown", (event) => {
+      if (window.matchMedia("(max-width: 960px)").matches) return;
+      event.preventDefault();
+      bar.setPointerCapture(event.pointerId);
+      bar.classList.add("is-drag");
+      document.body.classList.add("is-col-drag");
+      const onMove = (ev) => {
+        const rect = win.getBoundingClientRect();
+        const center = rect.left + rect.width / 2;
+        const half = fromLeft ? center - ev.clientX : ev.clientX - center;
+        setWidth(half * 2);
+        placeBars();
+      };
+      const stop = () => {
+        bar.classList.remove("is-drag");
+        document.body.classList.remove("is-col-drag");
+        bar.removeEventListener("pointermove", onMove);
+        bar.removeEventListener("pointerup", stop);
+        bar.removeEventListener("pointercancel", stop);
+        placeBars();
+      };
+      bar.addEventListener("pointermove", onMove);
+      bar.addEventListener("pointerup", stop);
+      bar.addEventListener("pointercancel", stop);
+      onMove(event);
+    });
+  }
+  if (leftBar) drag(leftBar, true);
+  if (rightBar) drag(rightBar, false);
+  placeBars();
+  window.addEventListener("resize", placeBars);
+})();
 </script>
 </body>
 </html>
