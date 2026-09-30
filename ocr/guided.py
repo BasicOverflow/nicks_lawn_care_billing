@@ -277,6 +277,15 @@ Use the name as written, usually LAST, First. One entry per row. Do not include 
 Return JSON {"names": ["name 1", "name 2"]}.
 """.strip()
 
+WORK_NAME_PROMPT = """
+Read this photographed work-completed sheet from top to bottom, the way the rows were written.
+List a client name only when that row has work written in the work cell: a day, a hedge mark, or a job note.
+Skip the name when the work cell is empty. A printed name with nothing beside it is not work completed.
+Do not alphabetize. Use the name as written, usually LAST, First. One entry per row that has work.
+Do not include days, prices, addresses, or phone numbers.
+Return JSON {"names": ["name 1", "name 2"]}.
+""".strip()
+
 
 def _name_score(query: str, candidate: str) -> int:
     qk = [k for k in _name_keys(query) if len(k) >= 4]
@@ -808,11 +817,11 @@ def extract_guided(
 
 
 def _sheet_names(model_id: str, cfg: dict, page: Path) -> list[str]:
-    """Names written on the page, top to bottom. Not the client roster."""
+    """Names on the work sheet that have work written beside them. Not the client roster."""
     text = chat_with_image(
         model_id,
         page,
-        READING_ORDER_PROMPT,
+        WORK_NAME_PROMPT,
         max_tokens=min(_max_out(cfg), 2048),
         temperature=0.0,
         guided_json=True,
@@ -861,7 +870,7 @@ def _work_cells(obj: dict, columns: list[str]) -> list[list[str]]:
                     cells[i] = ""
                 else:
                     cells[i] = normalize_work_marks(cells[i])
-            if cells[0]:
+            if cells[0] and any(part.strip() for part in cells[1:]):
                 rows.append(cells)
     return rows
 
@@ -910,16 +919,20 @@ def _take_work_row(name: str, pool: list[list[str]], columns: list[str]) -> list
 def _assemble_work_rows(
     names: list[str], pool: list[list[str]], columns: list[str]
 ) -> list[list[str]]:
-    """Place each sheet name once, then keep a leftover only when it is a new name."""
-    pool = _collapse_work_rows(pool, columns)
+    """Place each sheet name once. A name with no work written is left out."""
+    pool = _collapse_work_rows([row for row in pool if _work_text_len(row) > 0], columns)
     rows: list[list[str]] = []
     for name in names:
         hit = _take_work_row(name, pool, columns)
         if hit is None:
-            rows.append([name] + [""] * (len(columns) - 1))
-        else:
+            key = _name_key(name)
+            for i, row in enumerate(pool):
+                if key and _name_key(_row_name(row, columns)) == key:
+                    hit = pool.pop(i)
+                    break
+        if hit is not None and _work_text_len(hit) > 0:
             rows.append(hit)
-    rows.extend(pool)
+    rows.extend(row for row in pool if _work_text_len(row) > 0)
     return _collapse_work_rows(rows, columns)
 
 

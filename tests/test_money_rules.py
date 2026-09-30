@@ -131,3 +131,22 @@ def test_richer_copy_wins_and_unmatched_name_stays_once():
         ["SMITH, Mary", "9 16 23"],
         ["ADDED, Bob", "2"],
     ]
+
+
+def test_empty_work_rows_are_left_out():
+    from ocr.guided import _assemble_work_rows
+    from ocr.prompts import guided_work_prompt
+
+    columns = ["CLIENT", "DATE & WORK COMPLETED"]
+    names = ["SMITH, Mary", "BLANK, Pat", "JONES, Ann"]
+    pool = [
+        ["SMITH, Mary", "9 16"],
+        ["BLANK, Pat", ""],
+        ["JONES, Ann", "15h"],
+    ]
+    rows = _assemble_work_rows(names, pool, columns)
+    assert [row[0] for row in rows] == ["SMITH, Mary", "JONES, Ann"]
+    prompt = guided_work_prompt(["BLANK, Pat"], columns)
+    assert "Skip a row when the work cell is blank" in prompt
+    assert "If the work cell is blank on the paper, use" not in prompt
+

@@ -501,11 +501,16 @@ def guided_work_prompt(names: list[str], columns: list[str], title: str | None =
     col_line = " | ".join(columns)
     title_bit = f'Title: "{title}".\n' if title else ""
     if names:
-        who = "Look for these names and return a row only when that name is written on the page:\n" + "\n".join(
-            f"- {n}" for n in names
+        who = (
+            "Look for these names. Return a row only when that name is written on the page "
+            "and the work cell on that line is not empty:\n"
+            + "\n".join(f"- {n}" for n in names)
         )
     else:
-        who = "Return every row that is written in the table on this page."
+        who = (
+            "Return every row that has work written in the work cell. "
+            "Skip a name when nothing is written beside it."
+        )
     return f"""
 This is a photo of a work-completed sheet, not a price list.
 {title_bit}Transcribe ONLY the table printed on the paper.
@@ -528,7 +533,8 @@ Rules:
 - RIGHT: "5 11 22 Bush trimming $50"
 - RIGHT: "14 paid"
 - Do not add address, phone, email, mowing price, hedge price, or billing notes. Those are not columns on this sheet and must not be copied from memory.
-- If the work cell is blank on the paper, use "".
+- Skip a row when the work cell is blank. Do not return that name, and do not use "" to stand for missing work.
+- A printed name with no days, hedge mark, or job note is an empty row. Leave it out.
 - Omit anyone who is not written on this page.
 - Do not add columns. Put every day and every job note for that person in the one work cell.
 
