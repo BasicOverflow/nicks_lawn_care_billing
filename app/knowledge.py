@@ -66,6 +66,24 @@ def _collapse_repeated_letters(name: str) -> str:
     return re.sub(r"(.)\1+", r"\1", _client_key(name))
 
 
+def _name_tokens(name: str) -> list[str]:
+    return [tok for tok in re.findall(r"[a-z0-9]+", str(name).lower()) if len(tok) >= 2]
+
+
+def _token_subset_score(tokens_a: list[str], tokens_b: list[str]) -> float:
+    """Boost when every token in the shorter name appears in the longer one."""
+    if not tokens_a or not tokens_b:
+        return 0.0
+    shorter, longer = (tokens_a, tokens_b) if len(tokens_a) <= len(tokens_b) else (tokens_b, tokens_a)
+    matched = 0
+    for tok in shorter:
+        if max(SequenceMatcher(None, tok, other).ratio() for other in longer) >= 0.80:
+            matched += 1
+    if matched != len(shorter):
+        return 0.0
+    return min(1.0, 0.86 + 0.07 * matched)
+
+
 def _name_similarity(left: str, right: str) -> float:
     """How close two client names are. 1 is the same letters, ignoring punctuation."""
     a = _client_key(left)
@@ -77,15 +95,14 @@ def _name_similarity(left: str, right: str) -> float:
     collapsed = SequenceMatcher(None, _collapse_repeated_letters(left), _collapse_repeated_letters(right)).ratio()
     if collapsed >= 0.95:
         return collapsed
-    tokens_a = re.findall(r"[a-z0-9]+", str(left).lower())
-    tokens_b = re.findall(r"[a-z0-9]+", str(right).lower())
-    tokens_a = [tok for tok in tokens_a if len(tok) >= 2]
-    tokens_b = [tok for tok in tokens_b if len(tok) >= 2]
+    tokens_a = _name_tokens(left)
+    tokens_b = _name_tokens(right)
+    subset = _token_subset_score(tokens_a, tokens_b)
     if not tokens_a or not tokens_b:
-        return SequenceMatcher(None, a, b).ratio()
+        return max(SequenceMatcher(None, a, b).ratio(), subset)
     surname = SequenceMatcher(None, max(tokens_a, key=len), max(tokens_b, key=len)).ratio()
     if surname < 0.8:
-        return surname * 0.5
+        return max(surname * 0.5, subset)
 
     def _token_score(src: list[str], dest: list[str]) -> float:
         scores = [
@@ -95,7 +112,11 @@ def _name_similarity(left: str, right: str) -> float:
         return sum(scores) / len(scores)
 
     tokens = (_token_score(tokens_a, tokens_b) + _token_score(tokens_b, tokens_a)) / 2
-    return max(SequenceMatcher(None, a, b).ratio(), tokens, collapsed)
+    return max(SequenceMatcher(None, a, b).ratio(), tokens, collapsed, subset)
+
+
+def client_has_prices(row: dict) -> bool:
+    return row.get("mow_price") is not None or row.get("hedge_price") is not None
 
 
 def client_is_set_up(row: dict) -> bool:
@@ -122,9 +143,10 @@ def filing_client(sheet_name: str, roster: list[dict]) -> dict | None:
         row for row in roster
         if key and _client_key(str(row.get("name") or "")) == key
     ]
+    priced_exact = [row for row in exact if client_has_prices(row)]
+    if priced_exact:
+        return priced_exact[0]
     set_up = [row for row in exact if client_is_set_up(row)]
-    if set_up:
-        return set_up[0]
     unset_exact = [row for row in exact if not client_is_set_up(row)]
     scored: list[tuple[float, dict]] = []
     for row in roster:
@@ -133,14 +155,20 @@ def filing_client(sheet_name: str, roster: list[dict]) -> dict | None:
         name = str(row.get("name") or "").strip()
         if not name:
             continue
+        if _client_key(name) == key and not client_has_prices(row):
+            continue
         score = 1.0 if _client_key(name) == key else _name_similarity(sheet_name, name)
         if score >= 0.82:
             scored.append((score, row))
     if not scored:
+        if set_up:
+            return set_up[0]
         return unset_exact[0] if unset_exact else (exact[0] if exact else None)
     scored.sort(key=lambda item: item[0], reverse=True)
     best_score, best = scored[0]
     if len(scored) > 1 and scored[1][0] > best_score - 0.04:
+        if set_up:
+            return set_up[0]
         return unset_exact[0] if unset_exact else None
     return best
 
