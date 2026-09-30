@@ -924,7 +924,18 @@ function renderConflicts(conflicts) {
     billNote.className = "hint";
     billNote.hidden = true;
     billNote.textContent = "The bill uses the name and the work on the sheet. They are not added to the client list. Mowing and hedging print as $0 until a price is on file.";
-    [["yes", "Add them to the client list"], ["bill", "Just make a bill for this name"]].forEach(([value, text]) => {
+    const options = [["yes", "Add them to the client list"], ["bill", "Just make a bill for this name"]];
+    if (item.suggestion && item.suggestion.name && item.suggestion.id != null) {
+      card.dataset.matchId = String(item.suggestion.id);
+      options.unshift(["match", "Yes, this is " + item.suggestion.name]);
+    }
+    const matchNote = document.createElement("p");
+    matchNote.className = "hint";
+    matchNote.hidden = true;
+    if (item.suggestion && item.suggestion.name) {
+      matchNote.textContent = "The bill will use " + item.suggestion.name + " from the client list, including their prices.";
+    }
+    options.forEach(([value, text]) => {
       const lab = document.createElement("label");
       const radio = document.createElement("input");
       radio.type = "radio";
@@ -933,11 +944,13 @@ function renderConflicts(conflicts) {
       radio.addEventListener("change", () => {
         details.hidden = value !== "yes";
         billNote.hidden = value !== "bill";
+        matchNote.hidden = value !== "match";
       });
       lab.appendChild(radio);
       lab.appendChild(document.createTextNode(" " + text));
       choice.appendChild(lab);
     });
+    choice.appendChild(matchNote);
     choice.appendChild(billNote);
     card.appendChild(choice);
     card.appendChild(details);
@@ -951,9 +964,10 @@ function collectResolutions() {
   return cards.map(card => {
     const choice = card.querySelector('input[type="radio"]:checked');
     if (!choice) {
-      throw new Error("For each new name, add them to the client list or just make the bill.");
+      throw new Error("For each new name, confirm a suggested client, add them, or just make the bill.");
     }
     const billOnly = choice.value === "bill";
+    const matched = choice.value === "match";
     const text = (field) => {
       const node = card.querySelector(`[data-field="${field}"]`);
       return node ? node.value.trim() : "";
@@ -966,15 +980,16 @@ function collectResolutions() {
     };
     return {
       name: card.dataset.name || "",
-      save_as: billOnly ? (card.dataset.name || "") : text("save_as"),
-      address: billOnly ? "" : text("address"),
-      phone: billOnly ? "" : text("phone"),
-      email: billOnly ? "" : text("email"),
-      billing_notes: billOnly ? "" : text("notes"),
-      mow_price: billOnly ? null : num("mow_price"),
-      hedge_price: billOnly ? null : num("hedge_price"),
-      prefer_mail: billOnly ? false : !!(card.querySelector('[data-field="prefer_mail"]') || {}).checked,
+      save_as: billOnly || matched ? (card.dataset.name || "") : text("save_as"),
+      address: billOnly || matched ? "" : text("address"),
+      phone: billOnly || matched ? "" : text("phone"),
+      email: billOnly || matched ? "" : text("email"),
+      billing_notes: billOnly || matched ? "" : text("notes"),
+      mow_price: billOnly || matched ? null : num("mow_price"),
+      hedge_price: billOnly || matched ? null : num("hedge_price"),
+      prefer_mail: billOnly || matched ? false : !!(card.querySelector('[data-field="prefer_mail"]') || {}).checked,
       add_permanently: choice.value === "yes",
+      match_client_id: matched && card.dataset.matchId ? Number(card.dataset.matchId) : null,
     };
   });
 }

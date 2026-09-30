@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 from . import db
@@ -60,9 +61,74 @@ def _client_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
 
 
-def open_conflicts(extract: dict, roster_names: list[str], resolutions: list[dict] | None) -> list[dict]:
+def _name_similarity(left: str, right: str) -> float:
+    """How close two client names are. 1 is the same letters, ignoring punctuation."""
+    a = _client_key(left)
+    b = _client_key(right)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    tokens_a = re.findall(r"[a-z0-9]+", str(left).lower())
+    tokens_b = re.findall(r"[a-z0-9]+", str(right).lower())
+    tokens_a = [tok for tok in tokens_a if len(tok) >= 2]
+    tokens_b = [tok for tok in tokens_b if len(tok) >= 2]
+    if not tokens_a or not tokens_b:
+        return SequenceMatcher(None, a, b).ratio()
+    surname = SequenceMatcher(None, max(tokens_a, key=len), max(tokens_b, key=len)).ratio()
+    if surname < 0.8:
+        return surname * 0.5
+
+    def _token_score(src: list[str], dest: list[str]) -> float:
+        scores = [
+            max(SequenceMatcher(None, tok, other).ratio() for other in dest)
+            for tok in src
+        ]
+        return sum(scores) / len(scores)
+
+    tokens = (_token_score(tokens_a, tokens_b) + _token_score(tokens_b, tokens_a)) / 2
+    return max(SequenceMatcher(None, a, b).ratio(), tokens)
+
+
+def suggest_client(sheet_name: str, roster: list[dict]) -> dict | None:
+    """Best roster name when the sheet spelling is close, and not tied with another."""
+    scored: list[tuple[float, dict]] = []
+    for row in roster:
+        name = str(row.get("name") or "").strip()
+        if not name or _client_key(name) == _client_key(sheet_name):
+            continue
+        score = _name_similarity(sheet_name, name)
+        if score >= 0.82:
+            scored.append((score, row))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: item[0], reverse=True)
+    best_score, best = scored[0]
+    if len(scored) > 1 and scored[1][0] > best_score - 0.04:
+        return None
+    return {"id": int(best["id"]), "name": str(best["name"])}
+
+
+def _roster_records(roster) -> tuple[list[str], list[dict]]:
+    names: list[str] = []
+    rows: list[dict] = []
+    for item in roster or []:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "")
+            if name:
+                rows.append(item)
+                names.append(name)
+        else:
+            name = str(item or "")
+            if name:
+                names.append(name)
+    return names, rows
+
+
+def open_conflicts(extract: dict, roster, resolutions: list[dict] | None) -> list[dict]:
     """Names on the sheet that are not already on the client list and not answered yet."""
-    roster = {_client_key(name) for name in roster_names if _client_key(name)}
+    roster_names, roster_rows = _roster_records(roster)
+    known = {_client_key(name) for name in roster_names if _client_key(name)}
     decided = set()
     for item in resolutions or []:
         key = _client_key(str(item.get("name") or ""))
@@ -72,11 +138,15 @@ def open_conflicts(extract: dict, roster_names: list[str], resolutions: list[dic
     order: list[str] = []
     for row in extract_rows(extract):
         key = _client_key(row["name"])
-        if not key or key in roster or key in decided:
+        if not key or key in known or key in decided:
             continue
         work = _work_text(row)
         if key not in found:
-            found[key] = {"name": row["name"], "work": work}
+            found[key] = {
+                "name": row["name"],
+                "work": work,
+                "suggestion": suggest_client(row["name"], roster_rows) if roster_rows else None,
+            }
             order.append(key)
             continue
         if work and work not in found[key]["work"]:
@@ -104,7 +174,7 @@ def confirm_extract(
     """
     del sheet_kind
     roster_rows = [row for row in db.list_clients(conn) if row.get("on_roster") is not False]
-    conflicts = open_conflicts(extract, [row["name"] for row in roster_rows], resolutions)
+    conflicts = open_conflicts(extract, roster_rows, resolutions)
     if conflicts:
         return {"conflicts": conflicts, "written": 0, "lines": 0, "month": month}
 
@@ -134,25 +204,36 @@ def confirm_extract(
             cid = created[key]
         else:
             decision = decisions.get(key) or {}
-            save_as = str(decision.get("save_as") or r["name"]).strip() or r["name"]
-            save_key = _client_key(save_as)
-            matched = roster_by_key.get(save_key)
-            if matched:
-                cid = int(matched["id"])
-            else:
-                cid = db.save_typed_client(
-                    conn,
-                    client_id=None,
-                    name=save_as,
-                    address=(decision.get("address") or "") or None,
-                    phone=(decision.get("phone") or "") or None,
-                    email=(decision.get("email") or "") or None,
-                    billing_notes=(decision.get("billing_notes") or "") or None,
-                    mow_price=decision.get("mow_price"),
-                    hedge_price=decision.get("hedge_price"),
-                    prefer_mail=bool(decision.get("prefer_mail")),
-                    on_roster=bool(decision.get("add_permanently")),
+            match_id = decision.get("match_client_id")
+            matched_row = None
+            if match_id:
+                matched_row = next(
+                    (row for row in roster_rows if int(row["id"]) == int(match_id)),
+                    None,
                 )
+            if matched_row:
+                cid = int(matched_row["id"])
+                save_key = _client_key(matched_row.get("name") or "")
+            else:
+                save_as = str(decision.get("save_as") or r["name"]).strip() or r["name"]
+                save_key = _client_key(save_as)
+                matched = roster_by_key.get(save_key)
+                if matched:
+                    cid = int(matched["id"])
+                else:
+                    cid = db.save_typed_client(
+                        conn,
+                        client_id=None,
+                        name=save_as,
+                        address=(decision.get("address") or "") or None,
+                        phone=(decision.get("phone") or "") or None,
+                        email=(decision.get("email") or "") or None,
+                        billing_notes=(decision.get("billing_notes") or "") or None,
+                        mow_price=decision.get("mow_price"),
+                        hedge_price=decision.get("hedge_price"),
+                        prefer_mail=bool(decision.get("prefer_mail")),
+                        on_roster=bool(decision.get("add_permanently")),
+                    )
             created[key] = cid
             if save_key:
                 created[save_key] = cid

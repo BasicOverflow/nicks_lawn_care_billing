@@ -163,6 +163,38 @@ def test_unknown_name_is_a_conflict_until_answered():
     assert closed == []
 
 
+def test_near_spelling_suggests_the_roster_client():
+    from app.knowledge import open_conflicts
+
+    extract = {
+        "tables": [{
+            "columns": ["CLIENT", "DATE & WORK COMPLETED"],
+            "rows": [["SMIHT, Mary", "9 16"]],
+        }],
+    }
+    roster = [
+        {"id": 4, "name": "SMITH, Mary"},
+        {"id": 5, "name": "JONES, Ann"},
+    ]
+    conflicts = open_conflicts(extract, roster, [])
+    assert conflicts[0]["suggestion"]["id"] == 4
+    assert conflicts[0]["suggestion"]["name"] == "SMITH, Mary"
+    close = {
+        "tables": [{
+            "columns": ["CLIENT", "DATE & WORK COMPLETED"],
+            "rows": [["SMITH, Marie", "4"]],
+        }],
+    }
+    assert open_conflicts(close, roster, [])[0]["suggestion"]["name"] == "SMITH, Mary"
+    other = {
+        "tables": [{
+            "columns": ["CLIENT", "DATE & WORK COMPLETED"],
+            "rows": [["SMITH, John", "2"]],
+        }],
+    }
+    assert open_conflicts(other, roster, [])[0]["suggestion"] is None
+
+
 def test_empty_work_rows_are_left_out():
     from ocr.guided import _assemble_work_rows
     from ocr.prompts import guided_work_prompt
