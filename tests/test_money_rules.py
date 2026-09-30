@@ -367,6 +367,22 @@ def test_editor_accepts_multiple_dates_on_one_line():
     }, "2026-09")
     assert len(past) == 3
     assert all(item["day_or_note"].startswith("prior:2026-08:") for item in past)
+    past_rows = compile_invoice_lines(past, "2026-09")
+    past_mow = next(row for row in past_rows if row["description"] == "Mowing")
+    assert past_mow["date"] == "8/4, 8/12, 8/21"
+
+    job = _work_items_from_editor_line({
+        "description": "Bush trimming",
+        "amount": 50,
+        "date": "8/12",
+        "kind": "visit",
+    }, "2026-09")
+    assert job[0]["day_or_note"] == "prior:2026-08:12"
+    job_row = next(
+        row for row in compile_invoice_lines(job, "2026-09")
+        if row["description"] == "Bush trimming"
+    )
+    assert job_row["date"] == "8/12"
 
 
 def test_set_up_client_is_used_for_a_near_spelling():

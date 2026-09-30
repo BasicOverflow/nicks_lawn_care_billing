@@ -237,12 +237,39 @@ def compile_invoice_lines(lines: list[dict], month: str) -> list[dict]:
     groups: list[dict] = []
     index: dict[str, dict] = {}
     prior_items: list[dict] = []
+    prior_visits: dict[tuple[str, str, str], dict] = {}
     for line in lines:
         role, prior_month, prior_day = line_role(line)
         label, day = _service(line)
+        note = str(line.get("day_or_note") or "").strip()
+        loose = _parse_editor_dates(note, month)
+        if role == "visit" and loose and label not in {"Mowing", "Hedging"}:
+            if len(loose) == 1:
+                visit_month, visit_day, _hedge = loose[0]
+                if visit_month != month:
+                    role = "prior"
+                    prior_month = visit_month
+                    prior_day = str(visit_day)
+                else:
+                    day = visit_day
         if not label:
             continue
         if label.lower() in {"sales tax", "total"}:
+            continue
+        if role in {"prior", "prior_taxed"} and prior_day and label in {"Mowing", "Hedging"}:
+            key = (prior_month, label, role)
+            bucket = prior_visits.setdefault(
+                key,
+                {
+                    "days": [],
+                    "amount": Decimal("0"),
+                    "role": role,
+                    "prior_month": prior_month,
+                    "description": label,
+                },
+            )
+            bucket["days"].append(int(prior_day))
+            bucket["amount"] += _money(line.get("amount"))
             continue
         if role in {"prior", "prior_taxed"} and prior_day:
             prior_num = int(prior_month.split("-")[1]) if prior_month and "-" in prior_month else None
@@ -311,6 +338,21 @@ def compile_invoice_lines(lines: list[dict], month: str) -> list[dict]:
         else:
             table.append(printed)
             taxable += amount
+    for bucket in prior_visits.values():
+        prior_num = (
+            int(bucket["prior_month"].split("-")[1])
+            if bucket.get("prior_month") and "-" in bucket["prior_month"]
+            else None
+        )
+        days = sorted(set(bucket["days"]))
+        dates = ", ".join(f"{prior_num}/{day}" for day in days) if prior_num else ", ".join(str(day) for day in days)
+        prior_items.append({
+            "date": dates,
+            "description": bucket["description"],
+            "amount": bucket["amount"].quantize(_MONEY, rounding=ROUND_HALF_UP),
+            "role": bucket["role"],
+            "prior_month": bucket.get("prior_month") or "",
+        })
     for item in prior_items:
         printed = {
             "date": item["date"],
@@ -785,18 +827,19 @@ def _work_items_from_editor_line(ln: dict, bill_month: str) -> list[dict]:
 
     visit_label = _visit_label(desc)
     dates = _parse_editor_dates(str(ln.get("date") or ""), bill_month)
-    if dates and visit_label:
+    if dates:
         pieces = _split_amount(amount, len(dates))
         items = []
         for (visit_month, day, is_hedge), piece in zip(dates, pieces):
             if visit_month != bill_month:
                 note = f"prior:{visit_month}:{day}"
-            elif is_hedge or visit_label == "Hedging":
+            elif is_hedge or visit_label == "Hedging" or re.search(r"(?i)hedg", desc):
                 note = f"{day}h"
             else:
                 note = str(day)
+            item_desc = f"{visit_label} {day}" if visit_label else desc
             items.append({
-                "description": f"{visit_label} {day}",
+                "description": item_desc,
                 "amount": piece,
                 "day_or_note": note,
             })
