@@ -369,6 +369,17 @@ def test_set_up_client_is_used_for_a_near_spelling():
     assert filing_client("Kelly Small", informal)["id"] == 109
     assert filing_client("Priya", informal)["id"] == 107
     assert filing_client("PRYIA", informal)["id"] == 107
+    church = [
+        {
+            "id": 104,
+            "name": "SAINT SOPHIA CHURCH",
+            "address": "200 Hempstead Street",
+            "email": "office@saintsophianl.org",
+            "mow_price": 115,
+        },
+        {"id": 148, "name": "ST Sophia", "email": "office@saintsophianl.org"},
+    ]
+    assert filing_client("ST Sophia", church)["id"] == 104
     near = {
         "tables": [{
             "columns": ["CLIENT", "DATE & WORK COMPLETED"],

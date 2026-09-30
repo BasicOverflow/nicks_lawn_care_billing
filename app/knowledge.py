@@ -70,6 +70,16 @@ def _name_tokens(name: str) -> list[str]:
     return [tok for tok in re.findall(r"[a-z0-9]+", str(name).lower()) if len(tok) >= 2]
 
 
+def _token_equiv(left: str, right: str) -> bool:
+    if SequenceMatcher(None, left, right).ratio() >= 0.80:
+        return True
+    if left in {"st", "ste"} and right.startswith("saint"):
+        return True
+    if right in {"st", "ste"} and left.startswith("saint"):
+        return True
+    return False
+
+
 def _token_subset_score(tokens_a: list[str], tokens_b: list[str]) -> float:
     """Boost when every token in the shorter name appears in the longer one."""
     if not tokens_a or not tokens_b:
@@ -77,7 +87,7 @@ def _token_subset_score(tokens_a: list[str], tokens_b: list[str]) -> float:
     shorter, longer = (tokens_a, tokens_b) if len(tokens_a) <= len(tokens_b) else (tokens_b, tokens_a)
     matched = 0
     for tok in shorter:
-        if max(SequenceMatcher(None, tok, other).ratio() for other in longer) >= 0.80:
+        if any(_token_equiv(tok, other) for other in longer):
             matched += 1
     if matched != len(shorter):
         return 0.0
