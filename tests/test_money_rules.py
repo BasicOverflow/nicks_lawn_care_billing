@@ -34,10 +34,30 @@ def test_adjacent_numbers_stay_apart():
     assert all(m[3] != 5012 for m in marks)
 
 
-def test_day_plus_custom_stays_both():
+def test_day_written_with_a_job_is_the_job_date():
     marks = _kinds("5 bush trimming $50")
-    assert ("mow", 5, "", None) in marks
     assert ("custom", 5, "bush trimming", 50.0) in marks
+    assert ("mow", 5, "", None) not in marks
+    marks = _kinds("9 16 5 bush trimming 50")
+    assert ("mow", 9, "", None) in marks
+    assert ("mow", 16, "", None) in marks
+    assert ("mow", 5, "", None) not in marks
+    assert ("custom", 5, "bush trimming", 50.0) in marks
+    marks = _kinds("5 14 21 21 | Hedge Trimming 87 | 29")
+    mow_days = [m[1] for m in marks if m[0] == "mow"]
+    assert mow_days == [5, 14, 21, 29]
+    assert ("custom", 21, "Hedge Trimming", 87.0) in marks
+    marks = _kinds("8 | bush trimming $50")
+    assert marks[0][0] == "custom" and marks[0][1] == 8
+    rows = compile_invoice_lines([
+        {"description": "Bush trimming", "amount": 50, "day_or_note": "5"},
+        {"description": "Mowing 8", "amount": 0, "day_or_note": "8", "mow_price": 42},
+        {"description": "Mowing 15", "amount": 0, "day_or_note": "15", "mow_price": 42},
+    ], "2026-09")
+    by_name = {row["description"]: row for row in rows}
+    assert by_name["Bush trimming"]["date"] == "9/5"
+    assert by_name["Mowing"]["amount"] == __import__("decimal").Decimal("84.00")
+    assert by_name["Mowing"]["date"] == "9/8, 9/15"
 
 
 def test_hedge_marks():

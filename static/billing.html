@@ -344,17 +344,21 @@ function dayPieces(chunk) {
 function splitMarks(text) {
   const src = String(text || "").trim();
   if (!src) return [];
-  const jobRe = /([A-Za-z][^$|]{0,80}?)\s*\$\s*(\d+(?:\.\d{1,2})?)/g;
+  const jobRe = /(?<=^|[^A-Za-z0-9])((?:[1-9]|[12]\d|3[01])(?!h)\s+(?:\|\s*)?)?([A-Za-z][^$|\d]{0,80}?)\s*\$?\s*(\d+(?:\.\d{1,2})?)(?!\d)/gi;
   const hits = [];
   let match;
   while ((match = jobRe.exec(src))) {
-    const name = match[1].replace(/\s+/g, " ").replace(/^[\s;,|]+|[\s;,|]+$/g, "");
+    let start = match.index;
+    let name = match[2].replace(/\s+/g, " ").replace(/^[\s;,|]+|[\s;,|]+$/g, "");
+    const hedgeLead = name.match(/^h\s+/i);
+    if (hedgeLead && start > 0 && /\d/.test(src[start - 1])) {
+      start += hedgeLead[0].length;
+      name = name.slice(hedgeLead[0].length).trim();
+    }
     if (!name) continue;
-    hits.push({
-      start: match.index,
-      end: match.index + match[0].length,
-      label: `${name} ${moneyLabel(match[2])}`,
-    });
+    const day = match[1] ? match[1].match(/\d+/)[0] : "";
+    const label = day ? `${day} ${name} ${moneyLabel(match[3])}` : `${name} ${moneyLabel(match[3])}`;
+    hits.push({ start, end: match.index + match[0].length, label });
   }
   const boxes = [];
   let cursor = 0;

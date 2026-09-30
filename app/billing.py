@@ -231,7 +231,12 @@ def compile_invoice_lines(lines: list[dict], month: str) -> list[dict]:
             groups.append(row)
         if role == "visit" and day is not None and 1 <= day <= 31 and day not in row["days"]:
             row["days"].append(day)
-        row["amount"] += _money(line.get("amount"))
+        piece = _money(line.get("amount"))
+        if piece == 0 and label == "Mowing" and line.get("mow_price") not in (None, ""):
+            piece = _money(line.get("mow_price"))
+        elif piece == 0 and label == "Hedging" and line.get("hedge_price") not in (None, ""):
+            piece = _money(line.get("hedge_price"))
+        row["amount"] += piece
     table = []
     taxable = Decimal("0")
     after_tax = Decimal("0")
@@ -383,26 +388,124 @@ def build_pdf_bytes(*, company: str, client_name: str, address: str, month: str,
 
 
 def _reprice_visits(conn, lines: list[dict]) -> list[dict]:
-    """Mowing and hedging use the client's current prices. Other lines stay."""
+    """Mowing and hedging use the client's current prices. A day is one visit."""
     from . import db
 
+    seen: set[tuple[str, int]] = set()
+    kept: list[dict] = []
     for line in lines:
         role, _prior = line_role(line)
         if role != "visit":
+            kept.append(line)
             continue
-        label, _day = _service(line)
+        label, day = _service(line)
+        if label in {"Mowing", "Hedging"} and day is not None:
+            key = (label, day)
+            if key in seen:
+                if line.get("id"):
+                    db.delete_work_item(conn, int(line["id"]))
+                continue
+            seen.add(key)
         price = None
         if label == "Mowing":
             price = line.get("mow_price")
         elif label == "Hedging":
             price = line.get("hedge_price")
-        if price is None:
-            continue
-        amount = float(price)
-        if float(line.get("amount") or 0) != amount:
-            db.update_work_item(conn, int(line["id"]), description=line.get("description") or label, amount=amount)
+        if price is not None and line.get("id"):
+            amount = float(price)
+            if float(line.get("amount") or 0) != amount:
+                db.update_work_item(
+                    conn, int(line["id"]), description=line.get("description") or label, amount=amount,
+                )
             line["amount"] = amount
-    return lines
+        kept.append(line)
+    return kept
+
+
+def restore_job_dates(conn, month: str) -> None:
+    """Put the day written next to a custom job back on that line.
+
+    Review used to split that day into its own mowing mark. The job then had
+    no date, and the PDF date column was blank.
+    """
+    import json
+
+    from ocr.work_marks import parse_work_marks
+
+    from . import db
+    from .knowledge import _client_key, _work_text, extract_rows, filing_client
+
+    work = [dict(row) for row in db.work_for_month(conn, month)]
+    job_ids = sorted({str(row["source_job_id"]) for row in work if row.get("source_job_id")})
+    if not job_ids:
+        return
+    stored = conn.execute(
+        "SELECT id, extract_json FROM upload_jobs WHERE id = ANY(%s)",
+        (job_ids,),
+    ).fetchall()
+    roster = [row for row in db.list_clients(conn) if row.get("on_roster") is not False]
+    by_name = {}
+    for row in work:
+        by_name.setdefault(_client_key(row.get("client_name") or ""), int(row["client_id"]))
+    parsed: dict[int, list[dict]] = defaultdict(list)
+    for job in stored:
+        extract = job["extract_json"]
+        if isinstance(extract, str):
+            extract = json.loads(extract)
+        if not isinstance(extract, dict):
+            continue
+        for row in extract_rows(extract):
+            marks = [mark for mark in parse_work_marks(_work_text(row)) if mark["kind"] != "note"]
+            if not marks:
+                continue
+            chosen = filing_client(row["name"], roster) if roster else None
+            cid = int(chosen["id"]) if chosen else by_name.get(_client_key(row["name"]))
+            if cid:
+                parsed[cid].extend(marks)
+    for cid, marks in parsed.items():
+        customs = [mark for mark in marks if mark["kind"] == "custom" and mark.get("day")]
+        mow_counts: dict[int, int] = defaultdict(int)
+        for mark in marks:
+            if mark["kind"] == "mow" and mark.get("day"):
+                mow_counts[int(mark["day"])] += 1
+        items = [row for row in work if int(row["client_id"]) == cid]
+        used: set[int] = set()
+        for item in items:
+            label, _day = _service(item)
+            if label in {"Mowing", "Hedging"} or item.get("day_or_note"):
+                continue
+            note = str(item.get("day_or_note") or "")
+            if note.startswith("prior"):
+                continue
+            desc = str(item.get("description") or "")
+            amount = round(float(item.get("amount") or 0), 2)
+            for index, mark in enumerate(customs):
+                if index in used:
+                    continue
+                if str(mark["name"]).casefold() != desc.casefold():
+                    continue
+                if round(float(mark["amount"]), 2) != amount:
+                    continue
+                db.update_work_item(
+                    conn,
+                    int(item["id"]),
+                    description=desc,
+                    amount=item.get("amount"),
+                    day_or_note=str(mark["day"]),
+                )
+                item["day_or_note"] = str(mark["day"])
+                used.add(index)
+                break
+        custom_days = {int(mark["day"]) for mark in customs}
+        held: dict[int, list[dict]] = defaultdict(list)
+        for item in items:
+            label, day = _service(item)
+            if label == "Mowing" and day in custom_days:
+                held[int(day)].append(item)
+        for day, rows in held.items():
+            keep = mow_counts.get(day, 0)
+            for item in rows[keep:]:
+                db.delete_work_item(conn, int(item["id"]))
 
 
 def _retarget_month_clients(conn, month: str) -> None:
@@ -435,6 +538,7 @@ def generate_month_bills(conn, month: str) -> list[dict]:
     from . import db
 
     _retarget_month_clients(conn, month)
+    restore_job_dates(conn, month)
     rows = db.work_for_month(conn, month)
     by_client: dict[int, list] = defaultdict(list)
     meta: dict[int, dict] = {}
@@ -445,7 +549,7 @@ def generate_month_bills(conn, month: str) -> list[dict]:
     out = []
     for cid, lines in by_client.items():
         m = meta[cid]
-        _reprice_visits(conn, lines)
+        lines = _reprice_visits(conn, lines)
         letter = db.bill_letter(conn, month, cid)
         shown = str(letter.get("display_name") or "").strip() or m["client_name"]
         pdf = build_pdf_bytes(
@@ -598,7 +702,7 @@ def save_editable_bill(conn, month: str, client_id: int, *, email: str, address:
     for row in rows:
         row["mow_price"] = client.get("mow_price")
         row["hedge_price"] = client.get("hedge_price")
-    _reprice_visits(conn, rows)
+    rows = _reprice_visits(conn, rows)
     letter = db.bill_letter(conn, month, client_id)
     shown = str(letter.get("display_name") or "").strip() or client["name"]
     pdf = build_pdf_bytes(

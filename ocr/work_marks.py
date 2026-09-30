@@ -46,9 +46,9 @@ def normalize_work_marks(text: str) -> str:
 
 
 _DAY_TOKEN = re.compile(r"(?<![\d$.])(?P<day>[1-9]|[12]\d|3[01])(?P<mark>h)?(?![\d.])", re.I)
-# A lettered job, then a price with an optional dollar sign. The price stops
-# before the next digit so "50 12" is not one amount.
+# A job date may sit immediately before the name, with the review pipe between them.
 _JOB = re.compile(
+    r"(?:(?<![A-Za-z0-9])(?P<day>[1-9]|[12]\d|3[01])(?![hH])\s+(?:\|\s*)?)?"
     r"(?P<name>[A-Za-z](?:[^$\d|]{0,80}?))\s*\$?\s*(?P<amt>\d+(?:\.\d{1,2})?)(?!\d)"
 )
 # A house number after a price ("50 12 Main St") is an address, not a visit.
@@ -96,13 +96,7 @@ def parse_work_marks(text: str) -> list[dict]:
         house = _HOUSE_AFTER.match(raw, end)
         if house:
             end = house.end()
-        day = None
-        ahead = re.search(
-            r"(?<![\d.])([1-9]|[12]\d|3[01])\s*$",
-            raw[: start],
-        )
-        if ahead:
-            day = int(ahead.group(1))
+        day = int(match.group("day")) if match.group("day") else None
         jobs.append((
             start,
             end,
@@ -163,7 +157,8 @@ def review_boxes(text: str) -> list[str]:
         elif kind == "hedge":
             boxes.append(f"{mark['day']}h")
         elif kind == "custom":
-            boxes.append(f"{mark['name']} {_money_label(float(mark['amount']))}")
+            dated = f"{mark['day']} " if mark.get("day") else ""
+            boxes.append(f"{dated}{mark['name']} {_money_label(float(mark['amount']))}")
         elif mark.get("name"):
             boxes.append(str(mark["name"]))
     return boxes
