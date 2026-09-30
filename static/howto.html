@@ -4,14 +4,14 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>How to use — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=28"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=29"/>
 </head>
 <body>
 <header class="top">
   <span class="brand">Nick's Lawn Care</span>
   <nav class="nav">
-    <a href="/data">Data</a>
-    <a href="/billing">Billing</a>
+    <a href="/billing">Work</a>
+    <a href="/data">Clients</a>
     <a class="active" href="/howto">How to use</a>
   </nav>
   <div class="model-bar">
@@ -22,32 +22,19 @@
 </header>
 <main>
   <h1>How to use</h1>
+  <p class="hint">Names, prices, and contact details are on Clients. The steps below are all on Work, and each one shows up under the last.</p>
   <section class="card">
-    <h2>Make the bills</h2>
     <ol>
-      <li>On Data, type each client’s mowing price, hedge price, email, and phone.</li>
-      <li>Pick the month. Upload photos of the work-completed sheet, review the days, then send them to the datastore. You can also add one row without a photo.</li>
-      <li>On Billing, choose that month and click Generate PDFs.</li>
+      <li>Make sure the model is loaded. Check <strong>Model</strong> status in the header. If it is offline, click <strong>Load model</strong> and wait until it says ready.</li>
+      <li>Upload pictures of the work-completed sheets.</li>
+      <li>Click <strong>Upload &amp; OCR</strong>.</li>
+      <li>When OCR finishes, you will be prompted to review. Correct any mistakes the model made, then generate the PDF bills.</li>
+      <li>Review the PDFs. You can edit them if necessary.</li>
+      <li>Email all the appropriate PDFs.</li>
+      <li>Email the SMS PDFs to yourself.</li>
+      <li>Download the physical-mail PDFs to your computer so you can print them.</li>
+      <li>If you want it for taxes, download the tax table.</li>
     </ol>
-  </section>
-  <section class="card">
-    <h2>Who gets the bill</h2>
-    <ul>
-      <li>A client with an email address gets the bill by email. If the email field is blank, an address in the notes is used instead.</li>
-      <li>A client with a phone and no email gets the bill by text. Download SMS bills only, or email those PDFs to Nick so he can send the texts. They are not emailed to the client.</li>
-      <li>A client with neither is a paper bill. Download mail PDFs only.</li>
-    </ul>
-    <p>Changing an email on the billing table updates the delivery label right away. Email all bills skips anyone who was already emailed.</p>
-  </section>
-  <section class="card">
-    <h2>While you review a PDF</h2>
-    <p>Open a bill and choose Edit bill.</p>
-    <ul>
-      <li>A discount lowers the amount that sales tax is calculated on, and it is not given a visit date. Sales tax stays 6.35%.</li>
-      <li>Add bill total from previous month asks which month and the total from that month. By default that amount is before tax, so this month’s tax covers this month’s work and that total together.</li>
-      <li>Check “This amount already includes sales tax” when the number you type is the grand total from that month. It is added after this month’s tax and is not taxed again.</li>
-    </ul>
-    <p>Sales tax and the total update in the editor as you change lines. Save regenerates the PDF. Delete bill removes that client’s PDF and this month’s work, so Generate will not recreate it.</p>
   </section>
 </main>
 <script src="/static/js/app.js?v=13"></script>
