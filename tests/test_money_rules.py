@@ -97,6 +97,9 @@ def test_delivery():
     assert delivery_channel({"email": "", "phone": "", "billing_notes": ""}) == "mail"
     assert delivery_channel({"email": "a@b.com", "phone": "860", "prefer_mail": True}) == "mail"
     assert delivery_channel({"email": "", "phone": "860", "prefer_mail": True}) == "mail"
+    assert delivery_channel({"delivery": "sms", "email": "a@b.com", "phone": "860"}) == "sms"
+    assert delivery_channel({"delivery": "mail", "email": "a@b.com"}) == "mail"
+    assert delivery_channel({"delivery": "email", "phone": "860"}) == "email"
 
 
 def test_repeated_work_chunk_is_one_review_row():
@@ -142,6 +145,18 @@ def test_invoice_sentence_can_be_replaced():
     custom = "Below is the invoice for work done in September, plus the August balance."
     assert invoice_sentence("2026-09", custom) == custom
     assert invoice_sentence("2026-09", "  ") == "Below is the invoice for any work done in September."
+
+
+def test_letter_wording_restores_when_cleared():
+    from app.billing import default_closing, default_greeting, default_signoff, letter_or_default, stored_letter
+
+    assert default_greeting("SMITH, Mary") == "Dear Mary,"
+    assert "checks payable" in default_closing()
+    assert default_signoff().startswith("With regards,")
+    assert letter_or_default("  ", default_greeting("SMITH, Mary")) == "Dear Mary,"
+    assert letter_or_default("Hello Mary,", default_greeting("SMITH, Mary")) == "Hello Mary,"
+    assert stored_letter("Dear Mary,", default_greeting("SMITH, Mary")) is None
+    assert stored_letter("Hello Mary,", default_greeting("SMITH, Mary")) == "Hello Mary,"
 
 
 def test_unknown_name_is_a_conflict_until_answered():

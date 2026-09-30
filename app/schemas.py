@@ -162,6 +162,23 @@ class SaveBill(BaseModel):
         "",
         description="Sentence under Dear. Blank uses the standard line for the month.",
     )
+    greeting: str = Field(
+        "",
+        description="Dear line. Blank uses Dear and the client's given name.",
+    )
+    closing: str = Field(
+        "",
+        description="Paragraph under the price table. Blank uses the usual thank-you.",
+    )
+    signoff: str = Field(
+        "",
+        description="Lines after the closing, such as With regards and the name. Blank uses the usual sign-off.",
+    )
+    phone: str = Field("", description="Phone numbers. Blank clears the field.")
+    delivery: str = Field(
+        "",
+        description="email, sms, or mail. This is how the bill is sent.",
+    )
 
 
 class QueuedUpload(BaseModel):

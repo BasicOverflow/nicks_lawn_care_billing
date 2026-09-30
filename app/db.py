@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS clients (
   hedge_price NUMERIC,
   hedge_roster BOOLEAN NOT NULL DEFAULT FALSE,
   prefer_mail BOOLEAN NOT NULL DEFAULT FALSE,
+  delivery TEXT,
   entity_kind TEXT NOT NULL DEFAULT 'client',
   sort_order INTEGER,
   mowing_group TEXT,
@@ -63,6 +64,9 @@ CREATE TABLE IF NOT EXISTS bills (
   client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
   s3_key TEXT NOT NULL,
   cover_note TEXT,
+  greeting TEXT,
+  closing TEXT,
+  signoff TEXT,
   emailed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -81,6 +85,10 @@ _MIGRATIONS = (
     "ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS on_roster BOOLEAN NOT NULL DEFAULT TRUE",
     "ALTER TABLE bills ADD COLUMN IF NOT EXISTS cover_note TEXT",
+    "ALTER TABLE bills ADD COLUMN IF NOT EXISTS greeting TEXT",
+    "ALTER TABLE bills ADD COLUMN IF NOT EXISTS closing TEXT",
+    "ALTER TABLE bills ADD COLUMN IF NOT EXISTS signoff TEXT",
+    "ALTER TABLE clients ADD COLUMN IF NOT EXISTS delivery TEXT",
 )
 
 
@@ -247,6 +255,7 @@ def save_typed_client(
                 int(client_id),
             ),
         )
+        _sync_mail_choice(conn, int(client_id), prefer_mail)
         return int(client_id)
     if other:
         return save_typed_client(
@@ -262,7 +271,7 @@ def save_typed_client(
             prefer_mail=prefer_mail,
             on_roster=on_roster,
         )
-    return upsert_client(
+    new_id = upsert_client(
         conn,
         name=name,
         email=email,
@@ -274,6 +283,19 @@ def save_typed_client(
         hedge_roster=hedge_roster,
         prefer_mail=prefer_mail,
         on_roster=on_roster,
+    )
+    _sync_mail_choice(conn, new_id, prefer_mail)
+    return new_id
+
+
+def _sync_mail_choice(conn, client_id: int, prefer_mail: bool) -> None:
+    """The client-list Mail box forces paper. Unchecking it leaves an email or SMS choice."""
+    if prefer_mail:
+        conn.execute("UPDATE clients SET delivery = 'mail' WHERE id = %s", (client_id,))
+        return
+    conn.execute(
+        "UPDATE clients SET delivery = NULL WHERE id = %s AND delivery = 'mail'",
+        (client_id,),
     )
 
 
@@ -479,26 +501,38 @@ def get_upload_job(conn, job_id: str) -> dict | None:
     return conn.execute("SELECT * FROM upload_jobs WHERE id = %s", (job_id,)).fetchone()
 
 
-def set_bill_cover_note(conn, bill_id: int, note: str | None) -> None:
+def set_bill_letter(
+    conn,
+    bill_id: int,
+    *,
+    note: str | None,
+    greeting: str | None,
+    closing: str | None,
+    signoff: str | None,
+) -> None:
     conn.execute(
-        "UPDATE bills SET cover_note = %s WHERE id = %s",
-        (note or None, bill_id),
+        """
+        UPDATE bills SET
+          cover_note = %s,
+          greeting = %s,
+          closing = %s,
+          signoff = %s
+        WHERE id = %s
+        """,
+        (note or None, greeting or None, closing or None, signoff or None, bill_id),
     )
 
 
-def bill_cover_note(conn, month: str, client_id: int) -> str | None:
+def bill_letter(conn, month: str, client_id: int) -> dict:
     row = conn.execute(
         """
-        SELECT cover_note FROM bills
+        SELECT cover_note, greeting, closing, signoff FROM bills
         WHERE month = %s AND client_id = %s
         ORDER BY id DESC LIMIT 1
         """,
         (month, client_id),
     ).fetchone()
-    if not row:
-        return None
-    text = row.get("cover_note")
-    return str(text).strip() if text else None
+    return dict(row) if row else {}
 
 
 def save_bill(conn, *, month: str, client_id: int, s3_key: str) -> int:
@@ -519,7 +553,7 @@ def bills_for_month(conn, month: str) -> list[dict]:
         conn.execute(
             """
             SELECT b.*, c.name AS client_name, c.email, c.phone, c.billing_notes,
-                   c.prefer_mail, c.address, c.mow_price, c.hedge_price
+                   c.prefer_mail, c.delivery, c.address, c.mow_price, c.hedge_price
             FROM bills b JOIN clients c ON c.id = b.client_id
             WHERE b.month = %s
             ORDER BY (
@@ -552,17 +586,30 @@ def get_client(conn, client_id: int) -> dict | None:
     return conn.execute("SELECT * FROM clients WHERE id = %s", (client_id,)).fetchone()
 
 
-def update_client_contact(conn, client_id: int, *, email=None, address=None, name=None) -> None:
+def update_client_contact(
+    conn,
+    client_id: int,
+    *,
+    email=None,
+    address=None,
+    name=None,
+    phone=None,
+    delivery=None,
+    prefer_mail=False,
+) -> None:
     conn.execute(
         """
         UPDATE clients SET
           email = %s,
           address = %s,
+          phone = %s,
+          delivery = %s,
+          prefer_mail = %s,
           name = COALESCE(%s, name),
           updated_at = NOW()
         WHERE id = %s
         """,
-        (email or None, address or None, name, client_id),
+        (email or None, address or None, phone or None, delivery or None, bool(prefer_mail), name, client_id),
     )
 
 

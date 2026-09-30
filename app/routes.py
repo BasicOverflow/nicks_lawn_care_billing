@@ -798,6 +798,11 @@ def billing_edit_save(
                 address=body.address,
                 lines=lines,
                 intro=body.intro,
+                greeting=body.greeting,
+                closing=body.closing,
+                signoff=body.signoff,
+                phone=body.phone,
+                delivery=body.delivery,
             )
             detail = billing.get_editable_bill(conn, month, client_id)
     except ValueError as e:

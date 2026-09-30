@@ -96,11 +96,40 @@ def _invoice_when(month: str) -> tuple[str, str, int]:
 
 def invoice_sentence(month: str, custom: str | None = None) -> str:
     """The line under Dear. A saved sentence replaces the month line."""
-    text = str(custom or "").strip()
+    text = _letter_text(custom)
     if text:
         return text
     _letter, work_month, _month_num = _invoice_when(month)
     return f"Below is the invoice for any work done in {work_month}."
+
+
+def default_greeting(client_name: str) -> str:
+    return f"Dear {_first_name(client_name)},"
+
+
+def default_closing() -> str:
+    return _THANKS
+
+
+def default_signoff() -> str:
+    return f"With regards,\n{config.INVOICE_SIGNOFF}"
+
+
+def _letter_text(value: str | None) -> str:
+    return "\n".join(str(value or "").replace("\r\n", "\n").replace("\r", "\n").splitlines()).strip()
+
+
+def letter_or_default(custom: str | None, default: str) -> str:
+    text = _letter_text(custom)
+    return text or default
+
+
+def stored_letter(custom: str | None, default: str) -> str | None:
+    """None when the editor still has the usual wording, so a later default can change."""
+    text = _letter_text(custom)
+    if not text or text == _letter_text(default):
+        return None
+    return text
 
 
 def _service(line: dict) -> tuple[str, int | None]:
@@ -145,7 +174,10 @@ def contact_email(row: dict) -> str:
 
 
 def delivery_channel(row: dict) -> str:
-    """Paper when Mail is checked on the client. Otherwise email, then SMS, then paper."""
+    """A saved choice wins. Otherwise Mail is paper, then email, then SMS, then paper."""
+    choice = str(row.get("delivery") or "").strip().lower()
+    if choice in {"email", "sms", "mail"}:
+        return choice
     if row.get("prefer_mail"):
         return "mail"
     if "@" in contact_email(row):
@@ -231,7 +263,9 @@ def _wrap(text: str, font: str, size: float, width: float) -> list[str]:
 
 
 def build_pdf_bytes(*, company: str, client_name: str, address: str, month: str,
-                    lines: list[dict], email: str = "", intro: str | None = None) -> bytes:
+                    lines: list[dict], email: str = "", intro: str | None = None,
+                    greeting: str | None = None, closing: str | None = None,
+                    signoff: str | None = None) -> bytes:
     del company, address, email
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=letter)
@@ -301,25 +335,29 @@ def build_pdf_bytes(*, company: str, client_name: str, address: str, month: str,
     c.setFont("Times-Roman", 12)
     c.drawString(left, y, letter_date)
     y -= 22
-    c.drawString(left, y, f"Dear {_first_name(client_name)},")
-    y -= 20
-    for line in _wrap(invoice_sentence(month, intro), "Times-Roman", 12, width):
+
+    def draw_text(text: str, y_pos: float, *, center: bool, width_limit: float) -> float:
         c.setFont("Times-Roman", 12)
-        c.drawString(left, y, line)
-        y -= 16
+        paragraphs = str(text).splitlines() or [""]
+        for para in paragraphs:
+            wrapped = _wrap(para, "Times-Roman", 12, width_limit) if para.strip() else [""]
+            for line in wrapped:
+                if center and line:
+                    c.drawCentredString(page_w / 2, y_pos, line)
+                else:
+                    c.drawString(left, y_pos, line)
+                y_pos -= 16
+        return y_pos
+
+    y = draw_text(letter_or_default(greeting, default_greeting(client_name)), y, center=False, width_limit=width)
+    y -= 4
+    y = draw_text(invoice_sentence(month, intro), y, center=False, width_limit=width)
     y -= 6
     table.drawOn(c, left, y - table_h)
     y = y - table_h - 28
-    thanks_width = width * 0.92
-    for line in _wrap(_THANKS, "Times-Roman", 12, thanks_width):
-        c.setFont("Times-Roman", 12)
-        c.drawCentredString(page_w / 2, y, line)
-        y -= 15
-    y -= 22
-    c.setFont("Times-Roman", 12)
-    c.drawString(left, y, "With regards,")
-    y -= 28
-    c.drawString(left, y, config.INVOICE_SIGNOFF)
+    y = draw_text(letter_or_default(closing, default_closing()), y, center=True, width_limit=width * 0.92)
+    y -= 8
+    draw_text(letter_or_default(signoff, default_signoff()), y, center=False, width_limit=width)
     footer()
     c.showPage()
     c.save()
@@ -390,7 +428,7 @@ def generate_month_bills(conn, month: str) -> list[dict]:
     for cid, lines in by_client.items():
         m = meta[cid]
         _reprice_visits(conn, lines)
-        intro = db.bill_cover_note(conn, month, cid)
+        letter = db.bill_letter(conn, month, cid)
         pdf = build_pdf_bytes(
             company=config.COMPANY_NAME,
             client_name=m["client_name"],
@@ -398,7 +436,10 @@ def generate_month_bills(conn, month: str) -> list[dict]:
             month=month,
             lines=lines,
             email=m.get("email") or "",
-            intro=intro,
+            intro=letter.get("cover_note"),
+            greeting=letter.get("greeting"),
+            closing=letter.get("closing"),
+            signoff=letter.get("signoff"),
         )
         key = f"bills/{month}/{cid}_{m['client_name'].replace(' ', '_')[:40]}.pdf"
         storage.put_bytes(pdf, key, content_type="application/pdf")
@@ -427,10 +468,15 @@ def get_editable_bill(conn, month: str, client_id: int) -> dict | None:
         "client_id": client_id,
         "client_name": client["name"],
         "email": client.get("email") or "",
+        "phone": client.get("phone") or "",
         "address": client.get("address") or "",
+        "delivery": delivery_channel(client),
         "s3_key": bill["s3_key"] if bill else None,
         "bill_id": bill["id"] if bill else None,
+        "greeting": letter_or_default(bill.get("greeting") if bill else None, default_greeting(client["name"])),
         "intro": invoice_sentence(month, bill.get("cover_note") if bill else None),
+        "closing": letter_or_default(bill.get("closing") if bill else None, default_closing()),
+        "signoff": letter_or_default(bill.get("signoff") if bill else None, default_signoff()),
         "lines": [_editor_line(ln) for ln in lines],
         "preview": [
             {"date": row["date"], "description": row["description"], "amount": float(row["amount"])}
@@ -467,14 +513,27 @@ def _note_for_line(ln: dict, existing: dict | None) -> str | None:
 
 
 def save_editable_bill(conn, month: str, client_id: int, *, email: str, address: str,
-                       lines: list[dict], intro: str | None = None) -> dict:
+                       lines: list[dict], intro: str | None = None, phone: str | None = None,
+                       delivery: str | None = None, greeting: str | None = None,
+                       closing: str | None = None, signoff: str | None = None) -> dict:
     """Update client + work lines, regenerate PDF, return updated edit payload."""
     from . import db
 
     client = db.get_client(conn, client_id)
     if not client:
         raise ValueError("client not found")
-    db.update_client_contact(conn, client_id, email=email or None, address=address or None)
+    choice = str(delivery or "").strip().lower()
+    if choice not in {"email", "sms", "mail"}:
+        choice = delivery_channel(client)
+    db.update_client_contact(
+        conn,
+        client_id,
+        email=email or None,
+        address=address or None,
+        phone=phone or None,
+        delivery=choice,
+        prefer_mail=choice == "mail",
+    )
 
     stored = {int(r["id"]): r for r in db.work_for_client_month(conn, month, client_id)}
     existing_ids = set(stored)
@@ -521,12 +580,21 @@ def save_editable_bill(conn, month: str, client_id: int, *, email: str, address:
         lines=rows,
         email=client.get("email") or "",
         intro=intro,
+        greeting=greeting,
+        closing=closing,
+        signoff=signoff,
     )
     key = f"bills/{month}/{client_id}_{client['name'].replace(' ', '_')[:40]}.pdf"
     storage.put_bytes(pdf, key, content_type="application/pdf")
     bid = db.upsert_bill(conn, month=month, client_id=client_id, s3_key=key)
-    note = str(intro or "").strip()
-    db.set_bill_cover_note(conn, bid, None if not note or note == invoice_sentence(month) else note)
+    db.set_bill_letter(
+        conn,
+        bid,
+        note=stored_letter(intro, invoice_sentence(month)),
+        greeting=stored_letter(greeting, default_greeting(client["name"])),
+        closing=stored_letter(closing, default_closing()),
+        signoff=stored_letter(signoff, default_signoff()),
+    )
     return {
         "bill_id": bid,
         "client_id": client_id,

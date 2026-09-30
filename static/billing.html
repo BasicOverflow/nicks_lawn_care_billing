@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Work — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=34"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=35"/>
 </head>
 <body>
 <header class="top">
@@ -1389,8 +1389,20 @@ function fillEditor(editor, detail) {
   if (nameEl) nameEl.value = detail.client_name ?? "";
   if (emailEl) emailEl.value = detail.email ?? "";
   if (addrEl) addrEl.value = detail.address ?? "";
+  const phoneEl = editor.querySelector(".ed-phone");
+  if (phoneEl) phoneEl.value = detail.phone ?? "";
+  const channel = detail.delivery || "";
+  editor.querySelectorAll(".ed-channel").forEach(radio => {
+    radio.checked = radio.value === channel;
+  });
+  const greetingEl = editor.querySelector(".ed-greeting");
   const introEl = editor.querySelector(".ed-intro");
+  const closingEl = editor.querySelector(".ed-closing");
+  const signoffEl = editor.querySelector(".ed-signoff");
+  if (greetingEl && detail.greeting != null) greetingEl.value = detail.greeting;
   if (introEl && detail.intro != null) introEl.value = detail.intro;
+  if (closingEl && detail.closing != null) closingEl.value = detail.closing;
+  if (signoffEl && detail.signoff != null) signoffEl.value = detail.signoff;
 
   const tbody = editor.querySelector("tbody.ed-lines-body") || editor.querySelector(".edit-lines tbody");
   if (!tbody) return;
@@ -1457,16 +1469,30 @@ function showViewer(bills, title) {
         <button type="button" class="secondary btn-delete-bill">Delete bill</button>
       </div>
       <div class="bill-editor" hidden>
-        <p class="hint">Edit lines, add a discount, or add a previous month’s total. Sales tax is 6.35% of this month after discounts, plus a previous total unless that amount already includes tax.</p>
+        <p class="hint">Edit the letter, how this bill is sent, or the jobs and prices. Sales tax is 6.35% of this month after discounts, plus a previous total unless that amount already includes tax.</p>
         <label>Client</label>
         <input class="ed-name" readonly/>
+        <fieldset class="ed-delivery">
+          <legend>Delivery</legend>
+          <label><input class="ed-channel" type="radio" name="delivery-${b.client_id}" value="email"/> Email</label>
+          <label><input class="ed-channel" type="radio" name="delivery-${b.client_id}" value="sms"/> SMS</label>
+          <label><input class="ed-channel" type="radio" name="delivery-${b.client_id}" value="mail"/> Paper mail</label>
+        </fieldset>
         <label>Email</label>
         <input class="ed-email" type="text" autocomplete="off"/>
+        <label>Phone</label>
+        <input class="ed-phone" type="text" autocomplete="off"/>
         <label>Address</label>
         <input class="ed-address" type="text" autocomplete="off"/>
+        <label>Greeting</label>
+        <textarea class="ed-greeting" rows="2"></textarea>
         <label>Invoice sentence</label>
         <textarea class="ed-intro" rows="2"></textarea>
-        <p class="hint">This is the line under Dear. Clear it and save to use the usual sentence for the month.</p>
+        <label>Closing</label>
+        <textarea class="ed-closing" rows="4"></textarea>
+        <label>Sign-off</label>
+        <textarea class="ed-signoff" rows="2"></textarea>
+        <p class="hint">Greeting, sentence, closing, and sign-off are the words outside the price table. Clear one and save to use the usual wording.</p>
         <label>Line items</label>
         <table class="edit-lines"><thead><tr><th>Description</th><th>Amount</th><th></th></tr></thead>
         <tbody class="ed-lines-body"></tbody></table>
@@ -1531,8 +1557,13 @@ function wireEditor(block, bill) {
     fillEditor(editor, {
       client_name: bill.client_name || "",
       email: bill.email || "",
+      phone: bill.phone || "",
       address: bill.address || "",
+      delivery: bill.delivery || "",
+      greeting: bill.greeting || "",
       intro: bill.intro || "",
+      closing: bill.closing || "",
+      signoff: bill.signoff || "",
       lines: bill.lines || [],
     });
     const n = (bill.lines || []).length;
@@ -1546,8 +1577,13 @@ function wireEditor(block, bill) {
       }
       const detail = await api(`/api/billing/${encodeURIComponent(month)}/edit/${encodeURIComponent(clientId)}`);
       bill.email = detail.email || "";
+      bill.phone = detail.phone || "";
       bill.address = detail.address || "";
+      bill.delivery = detail.delivery || "";
+      bill.greeting = detail.greeting || "";
       bill.intro = detail.intro || "";
+      bill.closing = detail.closing || "";
+      bill.signoff = detail.signoff || "";
       bill.lines = detail.lines || [];
       bill.s3_key = detail.s3_key || bill.s3_key;
       fillEditor(editor, detail);
@@ -1566,12 +1602,24 @@ function wireEditor(block, bill) {
     }
   };
 
+function editorLetter(editor) {
+  const picked = editor.querySelector(".ed-channel:checked");
+  return {
+    client_name: editor.querySelector(".ed-name").value,
+    email: editor.querySelector(".ed-email").value,
+    phone: editor.querySelector(".ed-phone").value,
+    address: editor.querySelector(".ed-address").value,
+    delivery: picked ? picked.value : "",
+    greeting: editor.querySelector(".ed-greeting").value,
+    intro: editor.querySelector(".ed-intro").value,
+    closing: editor.querySelector(".ed-closing").value,
+    signoff: editor.querySelector(".ed-signoff").value,
+  };
+}
+
   const refill = (extra) => {
     fillEditor(editor, {
-      client_name: editor.querySelector(".ed-name").value,
-      email: editor.querySelector(".ed-email").value,
-      address: editor.querySelector(".ed-address").value,
-      intro: editor.querySelector(".ed-intro").value,
+      ...editorLetter(editor),
       lines: [...editorLines(editor), ...(extra || [])],
     });
   };
@@ -1616,16 +1664,19 @@ function wireEditor(block, bill) {
         method: "POST",
         headers: {"Content-Type":"application/json"},
         body: JSON.stringify({
-          email: editor.querySelector(".ed-email").value,
-          address: editor.querySelector(".ed-address").value,
-          intro: editor.querySelector(".ed-intro").value,
+          ...editorLetter(editor),
           lines,
         }),
       });
       bill.s3_key = r.bill.s3_key;
       bill.email = r.bill.email;
+      bill.phone = r.detail.phone;
       bill.address = r.detail.address;
+      bill.delivery = r.detail.delivery;
+      bill.greeting = r.detail.greeting;
       bill.intro = r.detail.intro;
+      bill.closing = r.detail.closing;
+      bill.signoff = r.detail.signoff;
       bill.lines = r.detail.lines;
       frame.src = pdfUrl(r.bill.s3_key);
       fillEditor(editor, r.detail);

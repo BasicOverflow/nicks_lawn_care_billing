@@ -308,7 +308,11 @@ td.row-tools { width: 1%; white-space: nowrap; }
 .conflict-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem .7rem; }
 .conflict-choice { margin: .45rem 0 .2rem; }
 .conflict-details[hidden] { display: none !important; }
-.ed-intro { width: 100%; min-height: 3.2rem; }
+.ed-intro, .ed-greeting, .ed-closing, .ed-signoff { width: 100%; min-height: 3.2rem; }
+.ed-closing { min-height: 5.5rem; }
+.ed-delivery { border: 0; margin: .35rem 0 .2rem; padding: 0; }
+.ed-delivery legend { font-weight: 600; padding: 0; }
+.ed-delivery label { display: inline-block; margin: .15rem 1rem .15rem 0; font-weight: 500; }
 .conflict-choice label { display: block; font-weight: 500; margin: .15rem 0; }
 
 .chat-card {
