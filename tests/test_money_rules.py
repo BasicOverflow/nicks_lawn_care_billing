@@ -344,6 +344,11 @@ def test_set_up_client_is_used_for_a_near_spelling():
     assert filing_client("SMIHT, Mary", roster)["id"] == 4
     assert filing_client("Test MMM", roster)["id"] == 9
     assert filing_client("SMITH, John", roster) is None
+    doubled = [
+        {"id": 45, "name": "KEELER, Chris", "address": "43 Brockett Rd.", "email": "cj@example.com", "mow_price": 50},
+        {"id": 115, "name": "KELLEER, Chris"},
+    ]
+    assert filing_client("KELLEER, Chris", doubled)["id"] == 45
     near = {
         "tables": [{
             "columns": ["CLIENT", "DATE & WORK COMPLETED"],

@@ -61,6 +61,11 @@ def _client_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
 
 
+def _collapse_repeated_letters(name: str) -> str:
+    """OCR often doubles a letter (KELLEER vs KEELER). Compare both spellings."""
+    return re.sub(r"(.)\1+", r"\1", _client_key(name))
+
+
 def _name_similarity(left: str, right: str) -> float:
     """How close two client names are. 1 is the same letters, ignoring punctuation."""
     a = _client_key(left)
@@ -69,6 +74,9 @@ def _name_similarity(left: str, right: str) -> float:
         return 0.0
     if a == b:
         return 1.0
+    collapsed = SequenceMatcher(None, _collapse_repeated_letters(left), _collapse_repeated_letters(right)).ratio()
+    if collapsed >= 0.95:
+        return collapsed
     tokens_a = re.findall(r"[a-z0-9]+", str(left).lower())
     tokens_b = re.findall(r"[a-z0-9]+", str(right).lower())
     tokens_a = [tok for tok in tokens_a if len(tok) >= 2]
@@ -87,7 +95,7 @@ def _name_similarity(left: str, right: str) -> float:
         return sum(scores) / len(scores)
 
     tokens = (_token_score(tokens_a, tokens_b) + _token_score(tokens_b, tokens_a)) / 2
-    return max(SequenceMatcher(None, a, b).ratio(), tokens)
+    return max(SequenceMatcher(None, a, b).ratio(), tokens, collapsed)
 
 
 def client_is_set_up(row: dict) -> bool:
@@ -117,6 +125,7 @@ def filing_client(sheet_name: str, roster: list[dict]) -> dict | None:
     set_up = [row for row in exact if client_is_set_up(row)]
     if set_up:
         return set_up[0]
+    unset_exact = [row for row in exact if not client_is_set_up(row)]
     scored: list[tuple[float, dict]] = []
     for row in roster:
         if not client_is_set_up(row):
@@ -128,11 +137,11 @@ def filing_client(sheet_name: str, roster: list[dict]) -> dict | None:
         if score >= 0.82:
             scored.append((score, row))
     if not scored:
-        return exact[0] if exact else None
+        return unset_exact[0] if unset_exact else (exact[0] if exact else None)
     scored.sort(key=lambda item: item[0], reverse=True)
     best_score, best = scored[0]
     if len(scored) > 1 and scored[1][0] > best_score - 0.04:
-        return exact[0] if exact else None
+        return unset_exact[0] if unset_exact else None
     return best
 
 
