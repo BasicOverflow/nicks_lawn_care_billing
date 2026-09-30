@@ -15,8 +15,19 @@ function el(id) { return document.getElementById(id); }
 
 let modelCheck = null;
 let modelDeploying = false;
+let modelReady = false;
+let modelLoadStarted = false;
+let modelLoadJob = "";
+let modelWaiters = [];
+
+function settleModelWaiters(err) {
+  const waiting = modelWaiters;
+  modelWaiters = [];
+  waiting.forEach(waiter => err ? waiter.reject(err) : waiter.resolve());
+}
 
 function paintModel(up, label) {
+  modelReady = !!up;
   const node = el("modelStatus");
   if (node) {
     node.textContent = label;
@@ -24,19 +35,26 @@ function paintModel(up, label) {
     node.classList.toggle("model-offline", !up);
   }
   const btn = el("btnLoadModel");
-  if (!btn) return;
-  if (up) {
-    btn.disabled = true;
-    btn.textContent = "Model Loaded";
-    btn.classList.add("is-loaded");
-  } else if (modelDeploying) {
-    btn.disabled = true;
-    btn.textContent = "Load model";
-    btn.classList.remove("is-loaded");
-  } else {
-    btn.disabled = false;
-    btn.textContent = "Load model";
-    btn.classList.remove("is-loaded");
+  if (btn) {
+    if (up) {
+      btn.disabled = true;
+      btn.textContent = "Model Loaded";
+      btn.classList.add("is-loaded");
+    } else if (modelDeploying) {
+      btn.disabled = true;
+      btn.textContent = "Load model";
+      btn.classList.remove("is-loaded");
+    } else {
+      btn.disabled = false;
+      btn.textContent = "Load model";
+      btn.classList.remove("is-loaded");
+    }
+  }
+  if (modelReady) {
+    modelLoadStarted = false;
+    modelLoadJob = "";
+    modelDeploying = false;
+    settleModelWaiters();
   }
 }
 
@@ -59,15 +77,34 @@ async function refreshModel() {
 }
 
 async function loadModel() {
+  if (modelReady || modelLoadStarted) return;
+  modelLoadStarted = true;
   modelDeploying = true;
   paintModel(false, el("modelStatus") ? el("modelStatus").textContent : "Model: …");
   try {
-    await api("/api/model/load", { method: "POST" });
+    const started = await api("/api/model/load", { method: "POST" });
+    modelLoadJob = started.job_id || "";
   } catch (e) {
+    modelLoadStarted = false;
+    modelLoadJob = "";
     modelDeploying = false;
+    settleModelWaiters(e);
     alert(e.message);
     refreshModel();
   }
+}
+
+function modelIsReady() {
+  return modelReady;
+}
+
+function ensureModel() {
+  if (modelReady) return Promise.resolve();
+  if (!modelLoadStarted) loadModel();
+  return new Promise((resolve, reject) => {
+    if (modelReady) resolve();
+    else modelWaiters.push({ resolve, reject });
+  });
 }
 
 const JOB_LABELS = {
@@ -156,7 +193,16 @@ async function pollProgress() {
     });
     const ocrLive = !!(p.ocr_busy || jobs.some(job => job.kind === "ocr" && job.status === "running"));
     window._ocrRunning = ocrLive;
-    modelDeploying = jobs.some(job => job.kind === "model" && job.status === "running");
+    const modelJobRunning = jobs.some(job => job.kind === "model" && job.status === "running");
+    const modelJobFailed = jobs.find(job => job.kind === "model" && (job.status === "error" || job.status === "cancelled"));
+    if (modelJobFailed && modelLoadJob && modelJobFailed.job_id === modelLoadJob) {
+      modelLoadStarted = false;
+      modelLoadJob = "";
+      modelDeploying = false;
+      settleModelWaiters(new Error(modelJobFailed.message || "Model failed to load"));
+    } else if (!modelReady) {
+      modelDeploying = modelLoadStarted || modelJobRunning;
+    }
     if (ocrLive) window._sawOcr = true;
     if (jobs.some(job => job.kind === "ocr" && job.status !== "running")) window._sawOcr = false;
     else if (window._sawOcr && !ocrLive) {
@@ -176,4 +222,11 @@ document.addEventListener("DOMContentLoaded", () => {
   setInterval(pollProgress, 1500);
   const btn = el("btnLoadModel");
   if (btn) btn.addEventListener("click", loadModel);
+  const chat = document.querySelector(".chat-card");
+  if (chat) {
+    chat.addEventListener("pointerdown", (event) => {
+      if (event.target.closest("#btnClearChat")) return;
+      ensureModel().catch(() => {});
+    });
+  }
 });

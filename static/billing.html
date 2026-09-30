@@ -29,7 +29,7 @@
         <h2>Chat with your data</h2>
         <button type="button" id="btnClearChat" class="secondary chat-clear">Clear chat</button>
       </div>
-      <p class="hint">Ask questions or update clients, work, and bills. Model must be loaded.</p>
+      <p class="hint">Ask questions or update clients, work, and bills. Using the chat loads the model.</p>
     </div>
     <div id="chatLog" class="chat-log" aria-live="polite">
       <div class="chat-empty" id="chatEmpty">
@@ -135,7 +135,7 @@
   <div class="col-resize right" role="separator" aria-orientation="vertical" aria-label="Resize middle windows"></div>
 </main>
 
-<script src="/static/js/app.js?v=13"></script>
+<script src="/static/js/app.js?v=14"></script>
 <script>
 let currentJob = null;
 let currentExtract = null;
@@ -601,11 +601,17 @@ function sendChat() {
   el("chatMsg").className = "msg chat-status";
   appendChat("assistant", "", { thinking: true });
   setChatBusy(true);
-  api("/api/chat", {
+  const waiting = typeof modelIsReady === "function" && !modelIsReady();
+  if (waiting) {
+    el("chatMsg").textContent = "Loading the model…";
+    el("chatMsg").className = "msg chat-status";
+  }
+  const start = typeof ensureModel === "function" ? ensureModel() : Promise.resolve();
+  start.then(() => api("/api/chat", {
     method: "POST",
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ message, history: chatHistory.slice(0, -1) }),
-  }).catch(e => {
+  })).catch(e => {
     removeThinking();
     appendChat("assistant", e.message || "Request failed");
     el("chatMsg").textContent = e.message;
