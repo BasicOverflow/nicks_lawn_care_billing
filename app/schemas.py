@@ -154,6 +154,10 @@ class SaveBill(BaseModel):
         ...,
         description="Full set of lines for this client and month. Lines left out are removed.",
     )
+    intro: str = Field(
+        "",
+        description="Sentence under Dear. Blank uses the standard line for the month.",
+    )
 
 
 class QueuedUpload(BaseModel):

@@ -94,6 +94,15 @@ def _invoice_when(month: str) -> tuple[str, str, int]:
     return letter, label, 0
 
 
+def invoice_sentence(month: str, custom: str | None = None) -> str:
+    """The line under Dear. A saved sentence replaces the month line."""
+    text = str(custom or "").strip()
+    if text:
+        return text
+    _letter, work_month, _month_num = _invoice_when(month)
+    return f"Below is the invoice for any work done in {work_month}."
+
+
 def _service(line: dict) -> tuple[str, int | None]:
     """Job name and day-of-month for one stored work row."""
     desc = str(line.get("description") or "").strip()
@@ -220,7 +229,7 @@ def _wrap(text: str, font: str, size: float, width: float) -> list[str]:
 
 
 def build_pdf_bytes(*, company: str, client_name: str, address: str, month: str,
-                    lines: list[dict], email: str = "") -> bytes:
+                    lines: list[dict], email: str = "", intro: str | None = None) -> bytes:
     del company, address, email
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=letter)
@@ -229,7 +238,7 @@ def build_pdf_bytes(*, company: str, client_name: str, address: str, month: str,
     right = page_w - 0.75 * inch
     width = right - left
     rows = compile_invoice_lines(lines, month)
-    letter_date, work_month, _month_num = _invoice_when(month)
+    letter_date, _work_month, _month_num = _invoice_when(month)
 
     cell = ParagraphStyle(
         "invCell", fontName="Times-Roman", fontSize=11, leading=14,
@@ -292,8 +301,11 @@ def build_pdf_bytes(*, company: str, client_name: str, address: str, month: str,
     y -= 22
     c.drawString(left, y, f"Dear {_first_name(client_name)},")
     y -= 20
-    c.drawString(left, y, f"Below is the invoice for any work done in {work_month}.")
-    y -= 18
+    for line in _wrap(invoice_sentence(month, intro), "Times-Roman", 12, width):
+        c.setFont("Times-Roman", 12)
+        c.drawString(left, y, line)
+        y -= 16
+    y -= 6
     table.drawOn(c, left, y - table_h)
     y = y - table_h - 28
     thanks_width = width * 0.92
@@ -350,6 +362,7 @@ def generate_month_bills(conn, month: str) -> list[dict]:
     for cid, lines in by_client.items():
         m = meta[cid]
         _reprice_visits(conn, lines)
+        intro = db.bill_cover_note(conn, month, cid)
         pdf = build_pdf_bytes(
             company=config.COMPANY_NAME,
             client_name=m["client_name"],
@@ -357,6 +370,7 @@ def generate_month_bills(conn, month: str) -> list[dict]:
             month=month,
             lines=lines,
             email=m.get("email") or "",
+            intro=intro,
         )
         key = f"bills/{month}/{cid}_{m['client_name'].replace(' ', '_')[:40]}.pdf"
         storage.put_bytes(pdf, key, content_type="application/pdf")
@@ -388,6 +402,7 @@ def get_editable_bill(conn, month: str, client_id: int) -> dict | None:
         "address": client.get("address") or "",
         "s3_key": bill["s3_key"] if bill else None,
         "bill_id": bill["id"] if bill else None,
+        "intro": invoice_sentence(month, bill.get("cover_note") if bill else None),
         "lines": [_editor_line(ln) for ln in lines],
         "preview": [
             {"date": row["date"], "description": row["description"], "amount": float(row["amount"])}
@@ -424,7 +439,7 @@ def _note_for_line(ln: dict, existing: dict | None) -> str | None:
 
 
 def save_editable_bill(conn, month: str, client_id: int, *, email: str, address: str,
-                       lines: list[dict]) -> dict:
+                       lines: list[dict], intro: str | None = None) -> dict:
     """Update client + work lines, regenerate PDF, return updated edit payload."""
     from . import db
 
@@ -477,10 +492,13 @@ def save_editable_bill(conn, month: str, client_id: int, *, email: str, address:
         month=month,
         lines=rows,
         email=client.get("email") or "",
+        intro=intro,
     )
     key = f"bills/{month}/{client_id}_{client['name'].replace(' ', '_')[:40]}.pdf"
     storage.put_bytes(pdf, key, content_type="application/pdf")
     bid = db.upsert_bill(conn, month=month, client_id=client_id, s3_key=key)
+    note = str(intro or "").strip()
+    db.set_bill_cover_note(conn, bid, None if not note or note == invoice_sentence(month) else note)
     return {
         "bill_id": bid,
         "client_id": client_id,

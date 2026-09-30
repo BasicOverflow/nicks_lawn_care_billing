@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS bills (
   month TEXT NOT NULL,
   client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
   s3_key TEXT NOT NULL,
+  cover_note TEXT,
   emailed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -77,7 +78,9 @@ _MIGRATIONS = (
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS mowing_group TEXT",
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS hedge_roster BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS sheet_kind TEXT",
+    "ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS on_roster BOOLEAN NOT NULL DEFAULT TRUE",
+    "ALTER TABLE bills ADD COLUMN IF NOT EXISTS cover_note TEXT",
 )
 
 
@@ -474,6 +477,28 @@ def clear_review(conn, job_id: str) -> dict | None:
 
 def get_upload_job(conn, job_id: str) -> dict | None:
     return conn.execute("SELECT * FROM upload_jobs WHERE id = %s", (job_id,)).fetchone()
+
+
+def set_bill_cover_note(conn, bill_id: int, note: str | None) -> None:
+    conn.execute(
+        "UPDATE bills SET cover_note = %s WHERE id = %s",
+        (note or None, bill_id),
+    )
+
+
+def bill_cover_note(conn, month: str, client_id: int) -> str | None:
+    row = conn.execute(
+        """
+        SELECT cover_note FROM bills
+        WHERE month = %s AND client_id = %s
+        ORDER BY id DESC LIMIT 1
+        """,
+        (month, client_id),
+    ).fetchone()
+    if not row:
+        return None
+    text = row.get("cover_note")
+    return str(text).strip() if text else None
 
 
 def save_bill(conn, *, month: str, client_id: int, s3_key: str) -> int:

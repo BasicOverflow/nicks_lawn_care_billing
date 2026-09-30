@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Work — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=31"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=32"/>
 </head>
 <body>
 <header class="top">
@@ -1354,6 +1354,8 @@ function fillEditor(editor, detail) {
   if (nameEl) nameEl.value = detail.client_name ?? "";
   if (emailEl) emailEl.value = detail.email ?? "";
   if (addrEl) addrEl.value = detail.address ?? "";
+  const introEl = editor.querySelector(".ed-intro");
+  if (introEl && detail.intro != null) introEl.value = detail.intro;
 
   const tbody = editor.querySelector("tbody.ed-lines-body") || editor.querySelector(".edit-lines tbody");
   if (!tbody) return;
@@ -1427,6 +1429,9 @@ function showViewer(bills, title) {
         <input class="ed-email" type="text" autocomplete="off"/>
         <label>Address</label>
         <input class="ed-address" type="text" autocomplete="off"/>
+        <label>Invoice sentence</label>
+        <textarea class="ed-intro" rows="2"></textarea>
+        <p class="hint">This is the line under Dear. Clear it and save to use the usual sentence for the month.</p>
         <label>Line items</label>
         <table class="edit-lines"><thead><tr><th>Description</th><th>Amount</th><th></th></tr></thead>
         <tbody class="ed-lines-body"></tbody></table>
@@ -1492,6 +1497,7 @@ function wireEditor(block, bill) {
       client_name: bill.client_name || "",
       email: bill.email || "",
       address: bill.address || "",
+      intro: bill.intro || "",
       lines: bill.lines || [],
     });
     const n = (bill.lines || []).length;
@@ -1506,6 +1512,7 @@ function wireEditor(block, bill) {
       const detail = await api(`/api/billing/${encodeURIComponent(month)}/edit/${encodeURIComponent(clientId)}`);
       bill.email = detail.email || "";
       bill.address = detail.address || "";
+      bill.intro = detail.intro || "";
       bill.lines = detail.lines || [];
       bill.s3_key = detail.s3_key || bill.s3_key;
       fillEditor(editor, detail);
@@ -1529,6 +1536,7 @@ function wireEditor(block, bill) {
       client_name: editor.querySelector(".ed-name").value,
       email: editor.querySelector(".ed-email").value,
       address: editor.querySelector(".ed-address").value,
+      intro: editor.querySelector(".ed-intro").value,
       lines: [...editorLines(editor), ...(extra || [])],
     });
   };
@@ -1575,12 +1583,14 @@ function wireEditor(block, bill) {
         body: JSON.stringify({
           email: editor.querySelector(".ed-email").value,
           address: editor.querySelector(".ed-address").value,
+          intro: editor.querySelector(".ed-intro").value,
           lines,
         }),
       });
       bill.s3_key = r.bill.s3_key;
       bill.email = r.bill.email;
       bill.address = r.detail.address;
+      bill.intro = r.detail.intro;
       bill.lines = r.detail.lines;
       frame.src = pdfUrl(r.bill.s3_key);
       fillEditor(editor, r.detail);

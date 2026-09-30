@@ -133,6 +133,15 @@ def test_richer_copy_wins_and_unmatched_name_stays_once():
     ]
 
 
+def test_invoice_sentence_can_be_replaced():
+    from app.billing import invoice_sentence
+
+    assert invoice_sentence("2026-09") == "Below is the invoice for any work done in September."
+    custom = "Below is the invoice for work done in September, plus the August balance."
+    assert invoice_sentence("2026-09", custom) == custom
+    assert invoice_sentence("2026-09", "  ") == "Below is the invoice for any work done in September."
+
+
 def test_unknown_name_is_a_conflict_until_answered():
     from app.knowledge import open_conflicts
 
