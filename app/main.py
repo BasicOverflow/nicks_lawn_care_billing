@@ -49,7 +49,7 @@ async def full_page_bodies(request: Request, call_next):
     range. FileResponse answers 206, and a slice of the page never renders.
     """
     path = request.url.path
-    if path in {"/", "/data", "/billing", "/howto"} or path.startswith("/static/"):
+    if path in {"/", "/data", "/billing", "/howto", "/clients"} or path.startswith("/static/"):
         request.scope["headers"] = [
             (key, value) for key, value in request.scope["headers"] if key.lower() != b"range"
         ]
@@ -72,19 +72,25 @@ def startup() -> None:
 
 @app.get("/", include_in_schema=False)
 def root():
-    """Send the browser to the data page."""
+    """Send the browser to the work workflow."""
+    return RedirectResponse("/billing")
+
+
+@app.get("/clients", include_in_schema=False)
+def clients_redirect():
+    """Client list lives on the data page."""
     return RedirectResponse("/data")
 
 
 @app.get("/data", include_in_schema=False)
 def data_page():
-    """Sheet upload, review, and data chat."""
+    """Editable client list: contact, mowing price, and hedge price."""
     return FileResponse(STATIC / "data.html")
 
 
 @app.get("/billing", include_in_schema=False)
 def billing_page():
-    """Monthly bills, downloads, and email."""
+    """Upload, review, then generate bills, one step under the next."""
     return FileResponse(STATIC / "billing.html")
 
 

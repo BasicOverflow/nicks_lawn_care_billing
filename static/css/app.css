@@ -107,6 +107,22 @@ main {
   margin: 0;
   padding: .5rem 25% 2.5rem;
 }
+main.flow {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1rem 1.25rem 2.5rem;
+}
+main.clients-page {
+  padding: .75rem 1rem 2.5rem;
+}
+.step-kicker {
+  margin: 0 0 .2rem;
+  font-size: .78rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
 main.split-data {
   --work-col: 40vw;
   --clients-col: minmax(0, 1fr);
