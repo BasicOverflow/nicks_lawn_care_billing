@@ -59,7 +59,7 @@ def knowledge_snapshot(conn, *, limit_work: int = 80, limit_clients: int = 120) 
     Prompts past roughly 14,000 characters make the server return an empty
     reply, which the chat showed as "No response from model."
     """
-    clients = db.list_clients(conn)
+    clients = [row for row in db.list_clients(conn) if row.get("on_roster") is not False]
     work = list(
         conn.execute(
             """

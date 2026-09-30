@@ -29,6 +29,24 @@ class ReviewDraft(BaseModel):
     sheet_kind: str | None = Field(None, description="Always work. Photo review is a work-completed log.")
 
 
+class ClientResolution(BaseModel):
+    """Details for a work-sheet name that is not on the client list yet."""
+
+    name: str = Field(..., description="Name as it appears on the reviewed sheet.")
+    save_as: str = Field("", description="Name to store. Blank keeps the sheet name.")
+    address: str = Field("", description="Service address.")
+    phone: str = Field("", description="Phone.")
+    email: str = Field("", description="Email. Blank means bills are not emailed.")
+    billing_notes: str = Field("", description="Mailing notes or other contact notes.")
+    mow_price: float | None = Field(None, description="Mowing price in dollars.")
+    hedge_price: float | None = Field(None, description="Hedge price in dollars.")
+    prefer_mail: bool = Field(False, description="Send a paper bill instead of email.")
+    add_permanently: bool = Field(
+        False,
+        description="True keeps the client on the client list. False uses them only for this month.",
+    )
+
+
 class CommitJob(BaseModel):
     """Write a reviewed OCR result into clients and work for one month."""
 
@@ -40,6 +58,10 @@ class CommitJob(BaseModel):
     extract: dict | None = Field(
         None,
         description="Tables as edited on the review screen. Replaces the OCR JSON before it is stored.",
+    )
+    resolutions: list[ClientResolution] = Field(
+        default_factory=list,
+        description="Filled-in details for names that are not on the client list.",
     )
 
 

@@ -133,6 +133,27 @@ def test_richer_copy_wins_and_unmatched_name_stays_once():
     ]
 
 
+def test_unknown_name_is_a_conflict_until_answered():
+    from app.knowledge import open_conflicts
+
+    extract = {
+        "tables": [{
+            "columns": ["CLIENT", "DATE & WORK COMPLETED"],
+            "rows": [
+                ["SMITH, Mary", "9 16"],
+                ["ZZZ, Test", "15h"],
+                ["ZZZ, Test", "bush 40"],
+            ],
+        }],
+    }
+    conflicts = open_conflicts(extract, ["SMITH Mary"], [])
+    assert [row["name"] for row in conflicts] == ["ZZZ, Test"]
+    assert "15h" in conflicts[0]["work"]
+    assert "bush 40" in conflicts[0]["work"]
+    closed = open_conflicts(extract, ["SMITH, Mary"], [{"name": "ZZZ, Test", "add_permanently": True}])
+    assert closed == []
+
+
 def test_empty_work_rows_are_left_out():
     from ocr.guided import _assemble_work_rows
     from ocr.prompts import guided_work_prompt

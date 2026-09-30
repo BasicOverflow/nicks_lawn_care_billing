@@ -56,6 +56,34 @@ def _stored_amount(value) -> float | None:
     return float(value)
 
 
+def _client_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+
+def open_conflicts(extract: dict, roster_names: list[str], resolutions: list[dict] | None) -> list[dict]:
+    """Names on the sheet that are not already on the client list and not answered yet."""
+    roster = {_client_key(name) for name in roster_names if _client_key(name)}
+    decided = set()
+    for item in resolutions or []:
+        key = _client_key(str(item.get("name") or ""))
+        if key:
+            decided.add(key)
+    found: dict[str, dict] = {}
+    order: list[str] = []
+    for row in extract_rows(extract):
+        key = _client_key(row["name"])
+        if not key or key in roster or key in decided:
+            continue
+        work = _work_text(row)
+        if key not in found:
+            found[key] = {"name": row["name"], "work": work}
+            order.append(key)
+            continue
+        if work and work not in found[key]["work"]:
+            found[key]["work"] = (found[key]["work"] + " " + work).strip()
+    return [found[key] for key in order]
+
+
 def confirm_extract(
     conn,
     extract: dict,
@@ -63,23 +91,71 @@ def confirm_extract(
     month: str,
     source_job_id: str | None = None,
     sheet_kind: str = "work",
+    resolutions: list[dict] | None = None,
 ) -> dict:
     """Store a reviewed work-completed sheet as one bill line per job.
 
+    A name that is not on the client list is returned in ``conflicts`` and
+    nothing is written until each of those names has a resolution. A resolution
+    can add the person to the client list, or keep them only for this month.
     A plain day is a mowing visit at that client's stored mowing price. A day
     with h is a hedge visit at the stored hedge price. A written job name and
-    dollar amount is its own line, using that written price. Contact fields and
-    the stored prices themselves are left as they are.
+    dollar amount is its own line, using that written price.
     """
     del sheet_kind
+    roster_rows = [row for row in db.list_clients(conn) if row.get("on_roster") is not False]
+    conflicts = open_conflicts(extract, [row["name"] for row in roster_rows], resolutions)
+    if conflicts:
+        return {"conflicts": conflicts, "written": 0, "lines": 0, "month": month}
+
+    roster_by_key: dict[str, dict] = {}
+    for row in roster_rows:
+        key = _client_key(row["name"])
+        if key:
+            roster_by_key.setdefault(key, row)
+    decisions: dict[str, dict] = {}
+    for item in resolutions or []:
+        key = _client_key(str(item.get("name") or ""))
+        if key:
+            decisions[key] = item
+
     if source_job_id:
         db.delete_work_from_job(conn, month, source_job_id)
     rows = extract_rows(extract)
     clients = 0
     lines = 0
+    created: dict[str, int] = {}
     for r in rows:
-        name = r["name"]
-        cid = db.upsert_client(conn, name=name)
+        key = _client_key(r["name"])
+        known = roster_by_key.get(key)
+        if known:
+            cid = int(known["id"])
+        elif key in created:
+            cid = created[key]
+        else:
+            decision = decisions.get(key) or {}
+            save_as = str(decision.get("save_as") or r["name"]).strip() or r["name"]
+            save_key = _client_key(save_as)
+            matched = roster_by_key.get(save_key)
+            if matched:
+                cid = int(matched["id"])
+            else:
+                cid = db.save_typed_client(
+                    conn,
+                    client_id=None,
+                    name=save_as,
+                    address=(decision.get("address") or "") or None,
+                    phone=(decision.get("phone") or "") or None,
+                    email=(decision.get("email") or "") or None,
+                    billing_notes=(decision.get("billing_notes") or "") or None,
+                    mow_price=decision.get("mow_price"),
+                    hedge_price=decision.get("hedge_price"),
+                    prefer_mail=bool(decision.get("prefer_mail")),
+                    on_roster=bool(decision.get("add_permanently")),
+                )
+            created[key] = cid
+            if save_key:
+                created[save_key] = cid
         lines += store_work_text(
             conn,
             client_id=cid,
@@ -88,7 +164,7 @@ def confirm_extract(
             source_job_id=source_job_id,
         )
         clients += 1
-    return {"written": clients, "lines": lines, "month": month}
+    return {"written": clients, "lines": lines, "month": month, "conflicts": []}
 
 
 def _work_text(row: dict) -> str:

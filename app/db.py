@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS clients (
   entity_kind TEXT NOT NULL DEFAULT 'client',
   sort_order INTEGER,
   mowing_group TEXT,
+  on_roster BOOLEAN NOT NULL DEFAULT TRUE,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS clients_name_norm ON clients (lower(trim(name)));
@@ -76,7 +77,7 @@ _MIGRATIONS = (
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS mowing_group TEXT",
     "ALTER TABLE clients ADD COLUMN IF NOT EXISTS hedge_roster BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS sheet_kind TEXT",
-    "ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+    "ALTER TABLE clients ADD COLUMN IF NOT EXISTS on_roster BOOLEAN NOT NULL DEFAULT TRUE",
 )
 
 
@@ -117,6 +118,7 @@ def upsert_client(
     hedge_price=None,
     hedge_roster=None,
     prefer_mail=None,
+    on_roster=None,
     entity_kind=None,
     sort_order=None,
     mowing_group=None,
@@ -135,6 +137,7 @@ def upsert_client(
               hedge_price = COALESCE(%s, hedge_price),
               hedge_roster = COALESCE(%s, hedge_roster),
               prefer_mail = COALESCE(%s, prefer_mail),
+              on_roster = COALESCE(%s, on_roster),
               entity_kind = COALESCE(%s, entity_kind),
               sort_order = COALESCE(%s, sort_order),
               mowing_group = COALESCE(%s, mowing_group),
@@ -151,6 +154,7 @@ def upsert_client(
                 hedge_price,
                 hedge_roster,
                 prefer_mail,
+                on_roster,
                 entity_kind,
                 sort_order,
                 mowing_group,
@@ -162,9 +166,9 @@ def upsert_client(
         """
         INSERT INTO clients (
           name, email, phone, address, billing_address, billing_notes,
-          mow_price, hedge_price, hedge_roster, prefer_mail, entity_kind, sort_order, mowing_group
+          mow_price, hedge_price, hedge_roster, prefer_mail, on_roster, entity_kind, sort_order, mowing_group
         )
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
         """,
         (
             name,
@@ -177,6 +181,7 @@ def upsert_client(
             hedge_price,
             bool(hedge_roster) if hedge_roster is not None else False,
             bool(prefer_mail) if prefer_mail is not None else False,
+            True if on_roster is None else bool(on_roster),
             entity_kind or "client",
             sort_order,
             mowing_group,
@@ -204,6 +209,7 @@ def save_typed_client(
     mow_price: float | None,
     hedge_price: float | None,
     prefer_mail: bool,
+    on_roster: bool = True,
 ) -> int:
     """Write a hand-entered roster row. Blank prices clear the stored price."""
     name = name.strip()
@@ -228,12 +234,13 @@ def save_typed_client(
               hedge_price = %s,
               hedge_roster = %s,
               prefer_mail = %s,
+              on_roster = %s,
               updated_at = NOW()
             WHERE id = %s
             """,
             (
                 name, address, phone, email, billing_notes,
-                mow_price, hedge_price, hedge_roster, bool(prefer_mail),
+                mow_price, hedge_price, hedge_roster, bool(prefer_mail), bool(on_roster),
                 int(client_id),
             ),
         )
@@ -250,6 +257,7 @@ def save_typed_client(
             mow_price=mow_price,
             hedge_price=hedge_price,
             prefer_mail=prefer_mail,
+            on_roster=on_roster,
         )
     return upsert_client(
         conn,
@@ -262,6 +270,7 @@ def save_typed_client(
         hedge_price=hedge_price,
         hedge_roster=hedge_roster,
         prefer_mail=prefer_mail,
+        on_roster=on_roster,
     )
 
 
@@ -335,13 +344,15 @@ def knowledge_records_for_sheet(conn, sheet_kind: str = "mowing") -> list[dict]:
     if kind == "hedges":
         where = """
             WHERE name NOT ILIKE '%%smoke%%'
+              AND on_roster
               AND (hedge_roster OR hedge_price IS NOT NULL)
         """
     elif kind in ("work", "work_completed", "other"):
-        where = " WHERE name NOT ILIKE '%%smoke%%' "
+        where = " WHERE name NOT ILIKE '%%smoke%%' AND on_roster "
     else:
         where = """
             WHERE name NOT ILIKE '%%smoke%%'
+              AND on_roster
               AND (
                 mow_price IS NOT NULL
                 OR entity_kind IN ('parcel', 'association')
@@ -350,7 +361,7 @@ def knowledge_records_for_sheet(conn, sheet_kind: str = "mowing") -> list[dict]:
     rows = conn.execute(_KNOWLEDGE_SELECT + where + order).fetchall()
     if not rows and kind not in ("hedges", "work", "work_completed", "other"):
         rows = conn.execute(
-            _KNOWLEDGE_SELECT + " WHERE name NOT ILIKE '%%smoke%%'" + order
+            _KNOWLEDGE_SELECT + " WHERE name NOT ILIKE '%%smoke%%' AND on_roster" + order
         ).fetchall()
     return [_plain_record(r) for r in rows if r.get("name")]
 

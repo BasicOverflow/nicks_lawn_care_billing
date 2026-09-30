@@ -297,6 +297,11 @@ td.row-tools { width: 1%; white-space: nowrap; }
 }
 .conflict-ul { margin: .4rem 0 .6rem; padding-left: 1.1rem; }
 .conflict-item { margin-bottom: .5rem; }
+.conflict-card { border-top: 1px solid #e0c9a8; padding: .7rem 0 .2rem; }
+.conflict-card h3 { margin: 0 0 .2rem; }
+.conflict-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem .7rem; }
+.conflict-choice { margin: .45rem 0 .2rem; }
+.conflict-choice label { display: block; font-weight: 500; margin: .15rem 0; }
 
 .chat-card {
   display: flex;
@@ -514,4 +519,5 @@ td.row-tools { width: 1%; white-space: nowrap; }
   main { padding: .45rem 25% 2rem; }
   table { display: block; overflow-x: auto; }
   .pdf-frame { height: 60vh; min-height: 320px; }
+  .conflict-grid { grid-template-columns: 1fr; }
 }

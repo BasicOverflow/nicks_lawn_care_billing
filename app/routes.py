@@ -421,11 +421,12 @@ async def commit_job(
 ):
     """Store the reviewed work-completed table as work lines for the month.
 
-    The body `extract` is the table after in-place edits. New names are added
-    as clients. Contact details and prices already typed on a client stay as
-    they are. Each plain day becomes a mowing line at that client's mowing
-    price. A day marked with h becomes a hedge line at the hedge price. A job
-    name with a dollar amount written on the sheet becomes its own line.
+    A name that is not on the client list is returned in `conflicts` and nothing
+    is stored until the request includes details for that person, plus whether
+    they should stay on the client list. Known clients are stored as they are.
+    Each plain day becomes a mowing line at that client's mowing price. A day
+    marked with h becomes a hedge line at the hedge price. A job name with a
+    dollar amount written on the sheet becomes its own line.
     """
     month = body.month
     if not month:
@@ -443,17 +444,19 @@ async def commit_job(
                 extract = json.loads(extract)
         if not extract:
             raise HTTPException(404, "extract missing")
-        db.save_upload_job(
-            conn, job_id, "stored", "Stored",
-            extract=extract, month=month,
-        )
         result = knowledge.confirm_extract(
             conn,
             extract,
             month=month,
             source_job_id=job_id,
             sheet_kind=sheet_kind,
+            resolutions=[item.model_dump() for item in body.resolutions],
         )
+        if not result.get("conflicts"):
+            db.save_upload_job(
+                conn, job_id, "stored", "Stored",
+                extract=extract, month=month,
+            )
     return result
 
 
@@ -531,13 +534,14 @@ def _public_client(row: dict) -> dict:
 
 @router.get("/clients", tags=["knowledge"])
 def clients():
-    """Every client on file: name, contact, mow price, and hedge price.
+    """Every client kept on the list: name, contact, mow price, and hedge price.
 
+    Someone billed for one month and not added to the list is left out.
     These rows are typed in. Prices are dollars. Missing prices are null.
-    OCR uses the names when it reads a work-completed photo.
     """
     with db.connect() as conn:
-        return {"clients": [_public_client(row) for row in db.list_clients(conn)]}
+        rows = [row for row in db.list_clients(conn) if row.get("on_roster") is not False]
+        return {"clients": [_public_client(row) for row in rows]}
 
 
 @router.post("/clients", tags=["knowledge"])
@@ -574,7 +578,11 @@ def save_clients(body: ClientRoster):
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e
             saved += 1
-        rows = [_public_client(row) for row in db.list_clients(conn)]
+        rows = [
+            _public_client(row)
+            for row in db.list_clients(conn)
+            if row.get("on_roster") is not False
+        ]
     return {"saved": saved, "clients": rows}
 
 
