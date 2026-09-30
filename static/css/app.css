@@ -301,6 +301,7 @@ td.row-tools { width: 1%; white-space: nowrap; }
 .conflict-card h3 { margin: 0 0 .2rem; }
 .conflict-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem .7rem; }
 .conflict-choice { margin: .45rem 0 .2rem; }
+.conflict-details[hidden] { display: none !important; }
 .ed-intro { width: 100%; min-height: 3.2rem; }
 .conflict-choice label { display: block; font-weight: 500; margin: .15rem 0; }
 

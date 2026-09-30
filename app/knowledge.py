@@ -97,7 +97,7 @@ def confirm_extract(
 
     A name that is not on the client list is returned in ``conflicts`` and
     nothing is written until each of those names has a resolution. A resolution
-    can add the person to the client list, or keep them only for this month.
+    can add the person to the client list, or make the bill for that name and leave them off the list.
     A plain day is a mowing visit at that client's stored mowing price. A day
     with h is a hedge visit at the stored hedge price. A written job name and
     dollar amount is its own line, using that written price.

@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Work — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=32"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=33"/>
 </head>
 <body>
 <header class="top">
@@ -827,7 +827,7 @@ el("btnCommit").onclick = async () => {
     });
     if (r.conflicts && r.conflicts.length) {
       renderConflicts(r.conflicts);
-      el("reviewMsg").textContent = "These names are not on the client list. Fill them in, then send again.";
+      el("reviewMsg").textContent = "These names are not on the client list. Add them, or just make the bill, then send again.";
       el("reviewMsg").className = "msg";
       return;
     }
@@ -851,7 +851,7 @@ function renderConflicts(conflicts) {
   box.hidden = false;
   box.replaceChildren();
   const intro = document.createElement("p");
-  intro.textContent = "These names are not on the client list. Add the address, prices, and how to reach them, then choose whether to keep each one on the list.";
+  intro.textContent = "These names are not on the client list. Add them with their details, or just make a bill for the name on the sheet.";
   box.appendChild(intro);
   conflicts.forEach((item, index) => {
     const card = document.createElement("div");
@@ -866,9 +866,12 @@ function renderConflicts(conflicts) {
       work.textContent = "Work on the sheet: " + item.work;
       card.appendChild(work);
     }
+    const details = document.createElement("div");
+    details.className = "conflict-details";
+    details.hidden = true;
     const grid = document.createElement("div");
     grid.className = "conflict-grid";
-    card.appendChild(grid);
+    details.appendChild(grid);
     const nameLabel = document.createElement("label");
     nameLabel.textContent = "Name to save";
     const nameInput = document.createElement("input");
@@ -878,11 +881,11 @@ function renderConflicts(conflicts) {
     nameLabel.appendChild(nameInput);
     grid.appendChild(nameLabel);
     ["Address", "Phone", "Email", "Notes"].forEach(label => {
-      const field = label.toLowerCase() === "notes" ? "notes" : label.toLowerCase();
+      const field = label.toLowerCase();
       const wrap = document.createElement("label");
-      wrap.textContent = label === "Notes" ? "Notes" : label;
+      wrap.textContent = label;
       const input = document.createElement("input");
-      input.dataset.field = field === "address" ? "address" : field;
+      input.dataset.field = field === "notes" ? "notes" : field;
       input.type = field === "email" ? "email" : "text";
       wrap.appendChild(input);
       grid.appendChild(wrap);
@@ -910,24 +913,34 @@ function renderConflicts(conflicts) {
     mailBox.dataset.field = "prefer_mail";
     mail.appendChild(mailBox);
     mail.appendChild(document.createTextNode(" Paper bill"));
-    card.appendChild(mail);
+    details.appendChild(mail);
     const choice = document.createElement("div");
     choice.className = "conflict-choice";
     const ask = document.createElement("p");
     ask.className = "hint";
-    ask.textContent = "Add this client to the client list permanently?";
+    ask.textContent = "What should happen with this name?";
     choice.appendChild(ask);
-    [["yes", "Yes, keep them on the client list"], ["no", "No, use them only for this month"]].forEach(([value, text]) => {
+    const billNote = document.createElement("p");
+    billNote.className = "hint";
+    billNote.hidden = true;
+    billNote.textContent = "The bill uses the name and the work on the sheet. They are not added to the client list. Mowing and hedging print as $0 until a price is on file.";
+    [["yes", "Add them to the client list"], ["bill", "Just make a bill for this name"]].forEach(([value, text]) => {
       const lab = document.createElement("label");
       const radio = document.createElement("input");
       radio.type = "radio";
       radio.name = "permanent-" + index;
       radio.value = value;
+      radio.addEventListener("change", () => {
+        details.hidden = value !== "yes";
+        billNote.hidden = value !== "bill";
+      });
       lab.appendChild(radio);
       lab.appendChild(document.createTextNode(" " + text));
       choice.appendChild(lab);
     });
+    choice.appendChild(billNote);
     card.appendChild(choice);
+    card.appendChild(details);
     box.appendChild(card);
   });
   box.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -938,8 +951,9 @@ function collectResolutions() {
   return cards.map(card => {
     const choice = card.querySelector('input[type="radio"]:checked');
     if (!choice) {
-      throw new Error("Choose whether to add each new client to the client list.");
+      throw new Error("For each new name, add them to the client list or just make the bill.");
     }
+    const billOnly = choice.value === "bill";
     const text = (field) => {
       const node = card.querySelector(`[data-field="${field}"]`);
       return node ? node.value.trim() : "";
@@ -952,14 +966,14 @@ function collectResolutions() {
     };
     return {
       name: card.dataset.name || "",
-      save_as: text("save_as"),
-      address: text("address"),
-      phone: text("phone"),
-      email: text("email"),
-      billing_notes: text("notes"),
-      mow_price: num("mow_price"),
-      hedge_price: num("hedge_price"),
-      prefer_mail: !!(card.querySelector('[data-field="prefer_mail"]') || {}).checked,
+      save_as: billOnly ? (card.dataset.name || "") : text("save_as"),
+      address: billOnly ? "" : text("address"),
+      phone: billOnly ? "" : text("phone"),
+      email: billOnly ? "" : text("email"),
+      billing_notes: billOnly ? "" : text("notes"),
+      mow_price: billOnly ? null : num("mow_price"),
+      hedge_price: billOnly ? null : num("hedge_price"),
+      prefer_mail: billOnly ? false : !!(card.querySelector('[data-field="prefer_mail"]') || {}).checked,
       add_permanently: choice.value === "yes",
     };
   });

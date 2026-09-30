@@ -43,7 +43,7 @@ class ClientResolution(BaseModel):
     prefer_mail: bool = Field(False, description="Send a paper bill instead of email.")
     add_permanently: bool = Field(
         False,
-        description="True keeps the client on the client list. False uses them only for this month.",
+    description="True keeps the client on the client list. False makes the bill only and leaves them off the list.",
     )
 
 
