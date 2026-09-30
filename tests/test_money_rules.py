@@ -95,6 +95,8 @@ def test_delivery():
     assert contact_email({"email": "", "billing_notes": "see a@b.com"}) == "a@b.com"
     assert delivery_channel({"email": "", "phone": "860", "billing_notes": ""}) == "sms"
     assert delivery_channel({"email": "", "phone": "", "billing_notes": ""}) == "mail"
+    assert delivery_channel({"email": "a@b.com", "phone": "860", "prefer_mail": True}) == "mail"
+    assert delivery_channel({"email": "", "phone": "860", "prefer_mail": True}) == "mail"
 
 
 def test_repeated_work_chunk_is_one_review_row():
@@ -193,6 +195,33 @@ def test_near_spelling_suggests_the_roster_client():
         }],
     }
     assert open_conflicts(other, roster, [])[0]["suggestion"] is None
+
+
+def test_set_up_client_is_used_for_a_near_spelling():
+    from app.knowledge import filing_client, open_conflicts
+
+    roster = [
+        {"id": 4, "name": "SMITH, Mary", "address": "123 Main St.", "email": "mary@example.com", "mow_price": 40},
+        {"id": 8, "name": "SMIHT, Mary"},
+        {"id": 9, "name": "MMM, Test", "address": "9 Oak", "phone": "8605550100"},
+    ]
+    assert filing_client("SMIHT, Mary", roster)["id"] == 4
+    assert filing_client("Test MMM", roster)["id"] == 9
+    assert filing_client("SMITH, John", roster) is None
+    near = {
+        "tables": [{
+            "columns": ["CLIENT", "DATE & WORK COMPLETED"],
+            "rows": [["SMIHT, Mary", "9"]],
+        }],
+    }
+    assert open_conflicts(near, roster, []) == []
+    other = {
+        "tables": [{
+            "columns": ["CLIENT", "DATE & WORK COMPLETED"],
+            "rows": [["SMITH, John", "2"]],
+        }],
+    }
+    assert open_conflicts(other, roster, [])[0]["name"] == "SMITH, John"
 
 
 def test_empty_work_rows_are_left_out():

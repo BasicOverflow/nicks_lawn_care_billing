@@ -512,6 +512,9 @@ def save_bill(conn, *, month: str, client_id: int, s3_key: str) -> int:
 
 
 def bills_for_month(conn, month: str) -> list[dict]:
+    from .billing import _retarget_month_clients
+
+    _retarget_month_clients(conn, month)
     return list(
         conn.execute(
             """
@@ -723,6 +726,36 @@ def delete_month_work(conn, month: str) -> dict:
         (month,),
     ).fetchall()
     return {"month": month, "work_items": len(work), "bills": len(bills)}
+
+
+def reassign_month_client(conn, month: str, source_id: int, target_id: int) -> None:
+    """Move one month of work onto another client. The target's existing bill stays."""
+    if int(source_id) == int(target_id):
+        return
+    conn.execute(
+        """
+        UPDATE work_items SET client_id = %s
+        WHERE month = %s AND client_id = %s
+        """,
+        (target_id, month, source_id),
+    )
+    target_bill = conn.execute(
+        "SELECT id FROM bills WHERE month = %s AND client_id = %s LIMIT 1",
+        (month, target_id),
+    ).fetchone()
+    if target_bill:
+        conn.execute(
+            "DELETE FROM bills WHERE month = %s AND client_id = %s",
+            (month, source_id),
+        )
+        return
+    conn.execute(
+        """
+        UPDATE bills SET client_id = %s
+        WHERE month = %s AND client_id = %s
+        """,
+        (target_id, month, source_id),
+    )
 
 
 def upsert_bill(conn, *, month: str, client_id: int, s3_key: str) -> int:

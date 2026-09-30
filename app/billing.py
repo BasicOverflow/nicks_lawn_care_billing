@@ -145,7 +145,9 @@ def contact_email(row: dict) -> str:
 
 
 def delivery_channel(row: dict) -> str:
-    """email, then sms when there is a phone, otherwise paper mail."""
+    """Paper when Mail is checked on the client. Otherwise email, then SMS, then paper."""
+    if row.get("prefer_mail"):
+        return "mail"
     if "@" in contact_email(row):
         return "email"
     if (row.get("phone") or "").strip():
@@ -347,10 +349,36 @@ def _reprice_visits(conn, lines: list[dict]) -> list[dict]:
     return lines
 
 
+def _retarget_month_clients(conn, month: str) -> None:
+    """Point this month's work at the set-up client when the sheet spelling differs."""
+    from . import db
+    from .knowledge import client_is_set_up, filing_client
+
+    roster = [row for row in db.list_clients(conn) if row.get("on_roster") is not False]
+    names = {}
+    for row in db.work_for_month(conn, month):
+        names[int(row["client_id"])] = row["client_name"]
+    for cid, name in names.items():
+        hit = filing_client(name, roster)
+        if not hit or int(hit["id"]) == cid:
+            continue
+        db.reassign_month_client(conn, month, cid, int(hit["id"]))
+        current = db.get_client(conn, cid)
+        if not current or client_is_set_up(current):
+            continue
+        leftover = conn.execute(
+            "SELECT 1 FROM work_items WHERE client_id = %s LIMIT 1",
+            (cid,),
+        ).fetchone()
+        if not leftover:
+            db.delete_client(conn, cid)
+
+
 def generate_month_bills(conn, month: str) -> list[dict]:
     """Create PDFs for each client with work in month; upload to S3; save bill rows."""
     from . import db
 
+    _retarget_month_clients(conn, month)
     rows = db.work_for_month(conn, month)
     by_client: dict[int, list] = defaultdict(list)
     meta: dict[int, dict] = {}

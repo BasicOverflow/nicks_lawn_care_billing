@@ -90,6 +90,52 @@ def _name_similarity(left: str, right: str) -> float:
     return max(SequenceMatcher(None, a, b).ratio(), tokens)
 
 
+def client_is_set_up(row: dict) -> bool:
+    """True when this client list row has contact, prices, notes, or Mail checked."""
+    if row.get("prefer_mail"):
+        return True
+    if row.get("mow_price") is not None or row.get("hedge_price") is not None:
+        return True
+    for field in ("address", "email", "phone", "billing_notes"):
+        if str(row.get(field) or "").strip():
+            return True
+    return False
+
+
+def filing_client(sheet_name: str, roster: list[dict]) -> dict | None:
+    """Client the bill should use.
+
+    An exact name that is already set up wins. Otherwise a single close spelling
+    of a set-up client is that same person. Two set-up clients that are equally
+    close are left unresolved.
+    """
+    key = _client_key(sheet_name)
+    exact = [
+        row for row in roster
+        if key and _client_key(str(row.get("name") or "")) == key
+    ]
+    set_up = [row for row in exact if client_is_set_up(row)]
+    if set_up:
+        return set_up[0]
+    scored: list[tuple[float, dict]] = []
+    for row in roster:
+        if not client_is_set_up(row):
+            continue
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        score = 1.0 if _client_key(name) == key else _name_similarity(sheet_name, name)
+        if score >= 0.82:
+            scored.append((score, row))
+    if not scored:
+        return exact[0] if exact else None
+    scored.sort(key=lambda item: item[0], reverse=True)
+    best_score, best = scored[0]
+    if len(scored) > 1 and scored[1][0] > best_score - 0.04:
+        return exact[0] if exact else None
+    return best
+
+
 def suggest_client(sheet_name: str, roster: list[dict]) -> dict | None:
     """Best roster name when the sheet spelling is close, and not tied with another."""
     scored: list[tuple[float, dict]] = []
@@ -138,7 +184,11 @@ def open_conflicts(extract: dict, roster, resolutions: list[dict] | None) -> lis
     order: list[str] = []
     for row in extract_rows(extract):
         key = _client_key(row["name"])
-        if not key or key in known or key in decided:
+        if roster_rows:
+            already = filing_client(row["name"], roster_rows) is not None
+        else:
+            already = key in known
+        if not key or already or key in decided:
             continue
         work = _work_text(row)
         if key not in found:
@@ -197,7 +247,8 @@ def confirm_extract(
     created: dict[str, int] = {}
     for r in rows:
         key = _client_key(r["name"])
-        known = roster_by_key.get(key)
+        chosen = filing_client(r["name"], roster_rows) if roster_rows else None
+        known = chosen or roster_by_key.get(key)
         if known:
             cid = int(known["id"])
         elif key in created:
