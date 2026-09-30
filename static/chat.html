@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Chat — Nick's Lawn Care</title>
+  <link rel="stylesheet" href="/static/css/app.css?v=38"/>
+</head>
+<body>
+<header class="top">
+  <span class="brand">Nick's Lawn Care</span>
+  <nav class="nav">
+    <a class="active" href="/chat">Chat</a>
+    <a href="/howto">How to use</a>
+    <a href="/data">Clients</a>
+    <a href="/billing">Work</a>
+  </nav>
+  <div class="model-bar">
+    <span id="modelStatus">Model: …</span>
+    <button type="button" id="btnLoadModel">Load model</button>
+  </div>
+  <div id="progressBars" class="progress-bars"></div>
+</header>
+
+<main class="chat-page">
+  <section class="card chat-card">
+    <div class="chat-header">
+      <div class="chat-header-top">
+        <h1>Chat with your data</h1>
+        <button type="button" id="btnClearChat" class="secondary chat-clear">Clear chat</button>
+      </div>
+      <p class="hint">Ask questions or update clients, work, and bills. Using the chat loads the model.</p>
+    </div>
+    <div id="chatLog" class="chat-log" aria-live="polite">
+      <div class="chat-empty" id="chatEmpty">
+        <p>Start a conversation about your billing data.</p>
+        <div class="chat-suggestions">
+          <button type="button" class="chip" data-suggest="Who was billed in 2025-09 without an email?">Who needs a mailed bill?</button>
+          <button type="button" class="chip" data-suggest="List clients and their mow prices">List mow prices</button>
+          <button type="button" class="chip" data-suggest="Show work items for this month">Show recent work</button>
+        </div>
+      </div>
+    </div>
+    <form id="chatForm" class="chat-composer" action="#" method="post">
+      <textarea id="chatInput" rows="1" placeholder="Message your data…" enterkeyhint="send"></textarea>
+      <button type="submit" id="btnChat" class="chat-send" title="Send">Send</button>
+    </form>
+    <p class="msg chat-status" id="chatMsg"></p>
+  </section>
+</main>
+
+<script src="/static/js/app.js?v=15"></script>
+<script src="/static/js/chat.js?v=1"></script>
+</body>
+</html>

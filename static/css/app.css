@@ -121,6 +121,26 @@ main.clients-page > .clients-window {
   width: min(var(--clients-window), 100%);
   margin: 0 auto;
 }
+main.work-page {
+  width: min(740px, 100%);
+  margin: 0 auto;
+  padding: .75rem 1rem 2.5rem;
+}
+main.work-page > .data-intro { margin-bottom: .5rem; }
+main.work-page > .data-intro h1 { margin: 0 0 .35rem; }
+main.chat-page {
+  width: min(920px, 100%);
+  margin: 0 auto;
+  padding: .75rem 1rem 2.5rem;
+}
+main.chat-page .chat-card {
+  height: calc(100vh - 5.5rem);
+  max-height: calc(100vh - 5.5rem);
+}
+main.chat-page .chat-header h1 {
+  margin: 0;
+  font-size: 1.35rem;
+}
 .step-kicker {
   margin: 0 0 .2rem;
   font-size: .78rem;
@@ -531,8 +551,7 @@ td.row-tools { width: 1%; white-space: nowrap; }
   }
   .col-resize { display: none; }
   main.clients-page > .clients-window { width: auto; }
-  main.split-data > .data-col-clients .chat-card {
-    position: static;
+  main.chat-page .chat-card {
     height: auto;
     max-height: 70vh;
   }

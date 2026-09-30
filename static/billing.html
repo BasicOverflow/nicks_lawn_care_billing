@@ -4,12 +4,13 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Work — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=37"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=38"/>
 </head>
 <body>
 <header class="top">
   <span class="brand">Nick's Lawn Care</span>
   <nav class="nav">
+    <a href="/chat">Chat</a>
     <a href="/howto">How to use</a>
     <a href="/data">Clients</a>
     <a class="active" href="/billing">Work</a>
@@ -21,34 +22,7 @@
   <div id="progressBars" class="progress-bars"></div>
 </header>
 
-<main class="split-data">
-  <div class="data-col data-col-clients">
-  <section class="card chat-card">
-    <div class="chat-header">
-      <div class="chat-header-top">
-        <h2>Chat with your data</h2>
-        <button type="button" id="btnClearChat" class="secondary chat-clear">Clear chat</button>
-      </div>
-      <p class="hint">Ask questions or update clients, work, and bills. Using the chat loads the model.</p>
-    </div>
-    <div id="chatLog" class="chat-log" aria-live="polite">
-      <div class="chat-empty" id="chatEmpty">
-        <p>Start a conversation about your billing data.</p>
-        <div class="chat-suggestions">
-          <button type="button" class="chip" data-suggest="Who was billed in 2025-09 without an email?">Who needs a mailed bill?</button>
-          <button type="button" class="chip" data-suggest="List clients and their mow prices">List mow prices</button>
-          <button type="button" class="chip" data-suggest="Show work items for this month">Show recent work</button>
-        </div>
-      </div>
-    </div>
-    <form id="chatForm" class="chat-composer" action="#" method="post">
-      <textarea id="chatInput" rows="1" placeholder="Message your data…" enterkeyhint="send"></textarea>
-      <button type="submit" id="btnChat" class="chat-send" title="Send">Send</button>
-    </form>
-    <p class="msg chat-status" id="chatMsg"></p>
-  </section>
-  </div>
-  <div class="data-col data-col-work">
+<main class="work-page">
   <div class="data-intro">
     <h1>Work</h1>
     <p class="hint">Upload the sheet, review it, then generate the bills. Each step shows up under the one before it.</p>
@@ -130,16 +104,12 @@
       <div id="viewerStack" class="pdf-stack"></div>
     </div>
   </section>
-  </div>
-  <div class="col-resize left" role="separator" aria-orientation="vertical" aria-label="Resize chat"></div>
-  <div class="col-resize right" role="separator" aria-orientation="vertical" aria-label="Resize middle windows"></div>
 </main>
 
-<script src="/static/js/app.js?v=14"></script>
+<script src="/static/js/app.js?v=15"></script>
 <script>
 let currentJob = null;
 let currentExtract = null;
-let chatHistory = [];
 /** @type {{file: File, url: string}[]} */
 let stagedPhotos = [];
 
@@ -597,116 +567,6 @@ function collectExtract() {
   return currentExtract;
 }
 
-function appendChat(role, text, { thinking } = {}) {
-  const empty = el("chatEmpty");
-  if (empty) empty.remove();
-  const log = el("chatLog");
-  const row = document.createElement("div");
-  row.className = `chat-row ${role}${thinking ? " thinking" : ""}`;
-  const bubble = document.createElement("div");
-  bubble.className = "chat-bubble";
-  if (thinking) {
-    bubble.innerHTML = `<span class="chat-typing"><span></span><span></span><span></span></span>`;
-  } else {
-    bubble.textContent = text;
-  }
-  row.appendChild(bubble);
-  log.appendChild(row);
-  log.scrollTop = log.scrollHeight;
-  return row;
-}
-
-function removeThinking() {
-  el("chatLog").querySelectorAll(".chat-row.thinking").forEach(n => n.remove());
-}
-
-function setChatBusy(busy) {
-  el("chatInput").disabled = !!busy;
-  el("btnChat").disabled = !!busy;
-}
-
-function sendChat() {
-  const input = el("chatInput");
-  const message = input.value.trim();
-  if (!message || input.disabled) return;
-  appendChat("user", message);
-  chatHistory.push({ role: "user", content: message });
-  input.value = "";
-  input.style.height = "auto";
-  el("chatMsg").textContent = "";
-  el("chatMsg").className = "msg chat-status";
-  appendChat("assistant", "", { thinking: true });
-  setChatBusy(true);
-  const waiting = typeof modelIsReady === "function" && !modelIsReady();
-  if (waiting) {
-    el("chatMsg").textContent = "Loading the model…";
-    el("chatMsg").className = "msg chat-status";
-  }
-  const start = typeof ensureModel === "function" ? ensureModel() : Promise.resolve();
-  start.then(() => api("/api/chat", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ message, history: chatHistory.slice(0, -1) }),
-  })).catch(e => {
-    removeThinking();
-    appendChat("assistant", e.message || "Request failed");
-    el("chatMsg").textContent = e.message;
-    el("chatMsg").className = "msg chat-status err";
-    setChatBusy(false);
-  });
-}
-
-el("chatForm").addEventListener("submit", (e) => {
-  e.preventDefault();
-  sendChat();
-});
-el("chatInput").addEventListener("keydown", (e) => {
-  const isEnter = e.key === "Enter" || e.keyCode === 13;
-  if (isEnter && !e.shiftKey && !e.isComposing) {
-    e.preventDefault();
-    e.stopPropagation();
-    sendChat();
-  }
-});
-el("chatInput").addEventListener("input", () => {
-  const t = el("chatInput");
-  t.style.height = "auto";
-  t.style.height = Math.min(t.scrollHeight, 140) + "px";
-});
-el("btnClearChat").onclick = () => {
-  chatHistory = [];
-  const log = el("chatLog");
-  log.innerHTML = `
-    <div class="chat-empty" id="chatEmpty">
-      <p>Start a conversation about your billing data.</p>
-      <div class="chat-suggestions">
-        <button type="button" class="chip" data-suggest="Who was billed in 2025-09 without an email?">Who needs a mailed bill?</button>
-        <button type="button" class="chip" data-suggest="List clients and their mow prices">List mow prices</button>
-        <button type="button" class="chip" data-suggest="Show work items for this month">Show recent work</button>
-      </div>
-    </div>`;
-  log.querySelectorAll("[data-suggest]").forEach(btn => {
-    btn.onclick = () => {
-      el("chatInput").value = btn.getAttribute("data-suggest");
-      el("chatInput").focus();
-      sendChat();
-    };
-  });
-  el("chatMsg").textContent = "";
-  el("chatMsg").className = "msg chat-status";
-  el("chatInput").value = "";
-  el("chatInput").style.height = "auto";
-  setChatBusy(false);
-  el("chatInput").focus();
-};
-document.querySelectorAll("[data-suggest]").forEach(btn => {
-  btn.onclick = () => {
-    el("chatInput").value = btn.getAttribute("data-suggest");
-    el("chatInput").focus();
-    sendChat();
-  };
-});
-
 el("btnUpload").onclick = async () => {
   const month = el("month").value;
   if (!stagedPhotos.length || !month) {
@@ -764,17 +624,6 @@ window.onJobDone = (p) => {
     }
   }
   updateQueueMsg(p);
-  if (p.kind === "chat" && p.detail && p.detail.answer) {
-    removeThinking();
-    const answer = p.detail.answer;
-    chatHistory.push({ role: "assistant", content: answer });
-    appendChat("assistant", answer);
-    const n = (p.detail.mutations_applied || []).length;
-    el("chatMsg").textContent = n ? `Updated datastore (${n} change${n === 1 ? "" : "s"}).` : "";
-    el("chatMsg").className = n ? "msg chat-status ok" : "msg chat-status";
-    setChatBusy(false);
-    el("chatInput").focus();
-  }
 };
 
 window.onJobError = (p) => {
@@ -785,13 +634,6 @@ window.onJobError = (p) => {
     }
   }
   updateQueueMsg(p);
-  if (p.kind === "chat") {
-    removeThinking();
-    appendChat("assistant", p.message || "Chat failed");
-    el("chatMsg").textContent = p.message || "Chat failed";
-    el("chatMsg").className = "msg chat-status err";
-    setChatBusy(false);
-  }
 };
 
 function updateQueueMsg(p) {
@@ -1262,85 +1104,6 @@ function pullSharedReview() {
 pullSharedReview();
 setInterval(pullSharedReview, 2500);
 
-(function () {
-  const main = document.querySelector("main.split-data");
-  if (!main) return;
-  const leftBar = main.querySelector(".col-resize.left");
-  const rightBar = main.querySelector(".col-resize.right");
-  const savedWork = localStorage.getItem("nicks-middle-width");
-  const savedClients = localStorage.getItem("nicks-clients-width");
-  if (savedWork && /^\d+px$/.test(savedWork)) main.style.setProperty("--work-col", savedWork);
-  if (savedClients && /^\d+px$/.test(savedClients)) main.style.setProperty("--clients-col", savedClients);
-
-  function metrics() {
-    const style = getComputedStyle(main);
-    const padLeft = parseFloat(style.paddingLeft) || 0;
-    const padRight = parseFloat(style.paddingRight) || 0;
-    const gap = parseFloat(style.columnGap) || 0;
-    return { padLeft, padRight, gap, inner: main.clientWidth - padLeft - padRight };
-  }
-  function workEl() { return main.querySelector(".data-col-work"); }
-  function placeBars() {
-    const box = main.getBoundingClientRect();
-    const work = workEl();
-    if (!work) return;
-    const rect = work.getBoundingClientRect();
-    if (leftBar) leftBar.style.left = (rect.left - box.left) + "px";
-    if (rightBar) rightBar.style.left = (rect.right - box.left) + "px";
-  }
-  function drag(bar, start, move) {
-    bar.addEventListener("pointerdown", (event) => {
-      if (window.matchMedia("(max-width: 960px)").matches) return;
-      event.preventDefault();
-      bar.setPointerCapture(event.pointerId);
-      bar.classList.add("is-drag");
-      document.body.classList.add("is-col-drag");
-      const state = start();
-      const onMove = (ev) => { move(ev, state); placeBars(); };
-      const stop = () => {
-        bar.classList.remove("is-drag");
-        document.body.classList.remove("is-col-drag");
-        bar.removeEventListener("pointermove", onMove);
-        bar.removeEventListener("pointerup", stop);
-        bar.removeEventListener("pointercancel", stop);
-        placeBars();
-      };
-      bar.addEventListener("pointermove", onMove);
-      bar.addEventListener("pointerup", stop);
-      bar.addEventListener("pointercancel", stop);
-      onMove(event);
-    });
-  }
-  if (leftBar) drag(leftBar, () => {
-    const workWidth = Math.round(workEl().getBoundingClientRect().width);
-    const value = workWidth + "px";
-    main.style.setProperty("--work-col", value);
-    localStorage.setItem("nicks-middle-width", value);
-    return { workWidth };
-  }, (ev, state) => {
-    const { padLeft, gap, inner } = metrics();
-    const maxClients = Math.max(160, inner - state.workWidth - gap * 2);
-    let clients = ev.clientX - main.getBoundingClientRect().left - padLeft - gap;
-    clients = Math.round(Math.min(maxClients, Math.max(160, clients)));
-    const value = clients + "px";
-    main.style.setProperty("--clients-col", value);
-    localStorage.setItem("nicks-clients-width", value);
-  });
-  if (rightBar) drag(rightBar, () => ({}), (ev) => {
-    const work = workEl();
-    const { inner, gap } = metrics();
-    const clients = main.querySelector(".data-col-clients");
-    const clientsWidth = clients ? clients.getBoundingClientRect().width : 0;
-    const maxWork = Math.max(280, inner - clientsWidth - gap * 2);
-    let width = ev.clientX - work.getBoundingClientRect().left;
-    width = Math.round(Math.min(maxWork, Math.max(280, width)));
-    const value = width + "px";
-    main.style.setProperty("--work-col", value);
-    localStorage.setItem("nicks-middle-width", value);
-  });
-  placeBars();
-  window.addEventListener("resize", placeBars);
-})();
 </script>
 <script>
 let lastBills = [];
