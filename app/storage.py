@@ -48,6 +48,13 @@ def download_to(key: str, dest: Path) -> Path:
     return dest
 
 
+def delete_key(key: str) -> None:
+    try:
+        client().delete_object(Bucket=config.S3_BUCKET, Key=key)
+    except Exception:
+        return
+
+
 def get_bytes(key: str) -> bytes:
     obj = client().get_object(Bucket=config.S3_BUCKET, Key=key)
     return obj["Body"].read()

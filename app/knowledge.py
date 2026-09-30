@@ -72,42 +72,68 @@ def confirm_extract(
     the stored prices themselves are left as they are.
     """
     del sheet_kind
+    if source_job_id:
+        db.delete_work_from_job(conn, month, source_job_id)
     rows = extract_rows(extract)
     clients = 0
     lines = 0
     for r in rows:
         name = r["name"]
         cid = db.upsert_client(conn, name=name)
-        client = db.get_client(conn, cid) or {}
-        mow = _stored_amount(client.get("mow_price"))
-        hedge = _stored_amount(client.get("hedge_price"))
-        work_text = " ".join(
-            str(cell).strip() for cell in (r.get("cells") or [])[1:] if str(cell).strip()
+        lines += store_work_text(
+            conn,
+            client_id=cid,
+            month=month,
+            text=_work_text(r),
+            source_job_id=source_job_id,
         )
-        jobs = [mark for mark in parse_work_marks(work_text) if mark["kind"] != "note"]
         clients += 1
-        for mark in jobs:
-            kind = mark["kind"]
-            if kind == "mow":
-                desc = f"Mowing {mark['day']}"
-                amount = 0.0 if mow is None else mow
-                day = str(mark["day"])
-            elif kind == "hedge":
-                desc = f"Hedging {mark['day']}"
-                amount = 0.0 if hedge is None else hedge
-                day = f"{mark['day']}h"
-            else:
-                desc = str(mark["name"])
-                amount = float(mark["amount"])
-                day = str(mark["day"]) if mark.get("day") else None
-            db.add_work_item(
-                conn,
-                client_id=cid,
-                month=month,
-                day_or_note=day,
-                description=desc[:500],
-                amount=amount,
-                source_job_id=source_job_id,
-            )
-            lines += 1
     return {"written": clients, "lines": lines, "month": month}
+
+
+def _work_text(row: dict) -> str:
+    """Days and jobs from the sheet. The address cell is not a visit."""
+    cells = [str(cell).strip() for cell in (row.get("cells") or [])]
+    address = (row.get("address") or "").strip()
+    parts = []
+    for index, cell in enumerate(cells):
+        if index == 0 or not cell:
+            continue
+        if address and cell == address:
+            continue
+        parts.append(cell)
+    return " ".join(parts)
+
+
+def store_work_text(conn, *, client_id: int, month: str, text: str, source_job_id: str | None = None) -> int:
+    """Store mow, hedge, and custom lines parsed from one work cell."""
+    client = db.get_client(conn, client_id) or {}
+    mow = _stored_amount(client.get("mow_price"))
+    hedge = _stored_amount(client.get("hedge_price"))
+    jobs = [mark for mark in parse_work_marks(text) if mark["kind"] != "note"]
+    written = 0
+    for mark in jobs:
+        kind = mark["kind"]
+        if kind == "mow":
+            desc = f"Mowing {mark['day']}"
+            amount = 0.0 if mow is None else mow
+            day = str(mark["day"])
+        elif kind == "hedge":
+            desc = f"Hedging {mark['day']}"
+            amount = 0.0 if hedge is None else hedge
+            day = f"{mark['day']}h"
+        else:
+            desc = str(mark["name"])
+            amount = float(mark["amount"])
+            day = str(mark["day"]) if mark.get("day") else None
+        db.add_work_item(
+            conn,
+            client_id=client_id,
+            month=month,
+            day_or_note=day,
+            description=desc[:500],
+            amount=amount,
+            source_job_id=source_job_id,
+        )
+        written += 1
+    return written

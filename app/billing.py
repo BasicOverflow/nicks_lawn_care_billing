@@ -30,6 +30,8 @@ _THANKS = (
 _MOW = re.compile(r"(?i)^mow(?:ing)?(?:\s+(\d{1,2}))?$")
 _HEDGE = re.compile(r"(?i)^hedg(?:e|ing)(?:\s+(\d{1,2}))?$")
 _NOTE_DAY = re.compile(r"(?i)^(\d{1,2})h?$")
+_PRIOR_NOTE = re.compile(r"(?i)^prior(?P<taxed>-taxed)?:(?P<month>.*)$")
+_EMAIL = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
 
 
 def _money(amount) -> Decimal:
@@ -51,8 +53,21 @@ def _ordinal(day: int) -> str:
 
 
 def _first_name(name: str) -> str:
-    parts = str(name or "").split()
-    return parts[0] if parts else "Customer"
+    """Given name only. Roster rows are stored LAST, First."""
+    raw = " ".join(str(name or "").split())
+    if not raw:
+        return "Customer"
+    if "," in raw:
+        given = raw.split(",", 1)[1].strip()
+    else:
+        given = raw
+    parts = given.split()
+    word = parts[0] if parts else ""
+    if not word:
+        return "Customer"
+    if word.isupper():
+        word = word.title()
+    return word
 
 
 def _invoice_when(month: str) -> tuple[str, str, int]:
@@ -96,48 +111,93 @@ def _service(line: dict) -> tuple[str, int | None]:
     return desc, day
 
 
+def line_role(line: dict) -> tuple[str, str]:
+    """visit, discount, prior, or prior_taxed, plus the prior month label."""
+    note = str(line.get("day_or_note") or "").strip()
+    desc = str(line.get("description") or "").strip()
+    if note.lower() == "discount" or desc.lower().startswith("discount"):
+        return "discount", ""
+    prior = _PRIOR_NOTE.match(note)
+    if prior:
+        role = "prior_taxed" if prior.group("taxed") else "prior"
+        return role, (prior.group("month") or "").strip()
+    kind = str(line.get("kind") or "").strip()
+    if kind in {"discount", "prior", "prior_taxed"}:
+        return kind, str(line.get("prior_month") or "").strip()
+    return "visit", ""
+
+
+def contact_email(row: dict) -> str:
+    """Addresses to email. Notes count only when the email field is empty."""
+    email = (row.get("email") or "").strip()
+    if "@" in email:
+        return email
+    return ", ".join(_EMAIL.findall(row.get("billing_notes") or ""))
+
+
+def delivery_channel(row: dict) -> str:
+    """email, then sms when there is a phone, otherwise paper mail."""
+    if "@" in contact_email(row):
+        return "email"
+    if (row.get("phone") or "").strip():
+        return "sms"
+    return "mail"
+
+
 def compile_invoice_lines(lines: list[dict], month: str) -> list[dict]:
     """Group visits into Date / Description / Price rows, then sales tax and total.
 
     Every mowing day in the month shares one row. Every hedge day shares one row.
-    A written job keeps its name. The price is the sum of the visits on that row.
+    A written job keeps its name. A discount reduces the taxable subtotal and has
+    no date. A previous-month total is taxed with this month unless it is marked
+    as already including sales tax, in which case it is added after the tax.
     """
     _letter, _work_name, month_num = _invoice_when(month)
     groups: list[dict] = []
     index: dict[str, dict] = {}
     for line in lines:
+        role, _prior_month = line_role(line)
         label, day = _service(line)
         if not label:
             continue
         if label.lower() in {"sales tax", "total"}:
             continue
-        key = label.casefold()
+        key = f"{role}:{label.casefold()}"
         row = index.get(key)
         if row is None:
-            row = {"description": label, "days": [], "amount": Decimal("0")}
+            row = {"description": label, "days": [], "amount": Decimal("0"), "role": role}
             index[key] = row
             groups.append(row)
-        if day is not None and 1 <= day <= 31 and day not in row["days"]:
+        if role == "visit" and day is not None and 1 <= day <= 31 and day not in row["days"]:
             row["days"].append(day)
         row["amount"] += _money(line.get("amount"))
     table = []
-    subtotal = Decimal("0")
+    taxable = Decimal("0")
+    after_tax = Decimal("0")
+    taxed_rows = []
     for row in groups:
         amount = row["amount"].quantize(_MONEY, rounding=ROUND_HALF_UP)
-        subtotal += amount
+        if row["role"] == "discount":
+            amount = -abs(amount)
         days = sorted(row["days"])
-        if month_num:
-            dates = ", ".join(f"{month_num}/{day}" for day in days)
+        if row["role"] == "visit" and days:
+            if month_num:
+                dates = ", ".join(f"{month_num}/{day}" for day in days)
+            else:
+                dates = ", ".join(str(day) for day in days)
         else:
-            dates = ", ".join(str(day) for day in days)
-        table.append({
-            "date": dates,
-            "description": row["description"],
-            "amount": amount,
-        })
-    tax = (subtotal * _TAX_RATE).quantize(_MONEY, rounding=ROUND_HALF_UP)
-    total = (subtotal + tax).quantize(_MONEY, rounding=ROUND_HALF_UP)
+            dates = ""
+        printed = {"date": dates, "description": row["description"], "amount": amount}
+        if row["role"] == "prior_taxed":
+            taxed_rows.append(printed)
+            after_tax += amount
+        else:
+            table.append(printed)
+            taxable += amount
+    tax = (taxable * _TAX_RATE).quantize(_MONEY, rounding=ROUND_HALF_UP)
+    total = (taxable + tax + after_tax).quantize(_MONEY, rounding=ROUND_HALF_UP)
     table.append({"date": "", "description": "Sales tax", "amount": tax})
+    table.extend(taxed_rows)
     table.append({"date": "", "description": "Total", "amount": total})
     return table
 
@@ -252,6 +312,29 @@ def build_pdf_bytes(*, company: str, client_name: str, address: str, month: str,
     return buf.getvalue()
 
 
+def _reprice_visits(conn, lines: list[dict]) -> list[dict]:
+    """Mowing and hedging use the client's current prices. Other lines stay."""
+    from . import db
+
+    for line in lines:
+        role, _prior = line_role(line)
+        if role != "visit":
+            continue
+        label, _day = _service(line)
+        price = None
+        if label == "Mowing":
+            price = line.get("mow_price")
+        elif label == "Hedging":
+            price = line.get("hedge_price")
+        if price is None:
+            continue
+        amount = float(price)
+        if float(line.get("amount") or 0) != amount:
+            db.update_work_item(conn, int(line["id"]), description=line.get("description") or label, amount=amount)
+            line["amount"] = amount
+    return lines
+
+
 def generate_month_bills(conn, month: str) -> list[dict]:
     """Create PDFs for each client with work in month; upload to S3; save bill rows."""
     from . import db
@@ -261,11 +344,12 @@ def generate_month_bills(conn, month: str) -> list[dict]:
     meta: dict[int, dict] = {}
     for r in rows:
         cid = int(r["client_id"])
-        by_client[cid].append(r)
+        by_client[cid].append(dict(r))
         meta[cid] = r
     out = []
     for cid, lines in by_client.items():
         m = meta[cid]
+        _reprice_visits(conn, lines)
         pdf = build_pdf_bytes(
             company=config.COMPANY_NAME,
             client_name=m["client_name"],
@@ -304,15 +388,39 @@ def get_editable_bill(conn, month: str, client_id: int) -> dict | None:
         "address": client.get("address") or "",
         "s3_key": bill["s3_key"] if bill else None,
         "bill_id": bill["id"] if bill else None,
-        "lines": [
-            {
-                "id": int(ln["id"]),
-                "description": ln.get("description") or "",
-                "amount": float(ln["amount"]) if ln.get("amount") is not None else 0.0,
-            }
-            for ln in lines
+        "lines": [_editor_line(ln) for ln in lines],
+        "preview": [
+            {"date": row["date"], "description": row["description"], "amount": float(row["amount"])}
+            for row in compile_invoice_lines(lines, month)
         ],
     }
+
+
+def _editor_line(ln: dict) -> dict:
+    role, prior_month = line_role(ln)
+    amount = float(ln["amount"]) if ln.get("amount") is not None else 0.0
+    return {
+        "id": int(ln["id"]),
+        "description": ln.get("description") or "",
+        "amount": amount,
+        "kind": role,
+        "prior_month": prior_month,
+    }
+
+
+def _note_for_line(ln: dict, existing: dict | None) -> str | None:
+    role = str(ln.get("kind") or "").strip() or line_role(ln)[0]
+    prior_month = str(ln.get("prior_month") or "").strip()
+    desc = str(ln.get("description") or "").strip()
+    if role == "discount" or desc.lower().startswith("discount"):
+        return "discount"
+    if role == "prior_taxed":
+        return f"prior-taxed:{prior_month}"
+    if role == "prior":
+        return f"prior:{prior_month}"
+    if existing and existing.get("day_or_note"):
+        return existing.get("day_or_note")
+    return None
 
 
 def save_editable_bill(conn, month: str, client_id: int, *, email: str, address: str,
@@ -325,7 +433,8 @@ def save_editable_bill(conn, month: str, client_id: int, *, email: str, address:
         raise ValueError("client not found")
     db.update_client_contact(conn, client_id, email=email or None, address=address or None)
 
-    existing_ids = {int(r["id"]) for r in db.work_for_client_month(conn, month, client_id)}
+    stored = {int(r["id"]): r for r in db.work_for_client_month(conn, month, client_id)}
+    existing_ids = set(stored)
     keep_ids = set()
     for ln in lines:
         desc = str(ln.get("description") or "").strip()
@@ -335,19 +444,32 @@ def save_editable_bill(conn, month: str, client_id: int, *, email: str, address:
         except (TypeError, ValueError):
             amt = 0.0
         wid = ln.get("id")
-        if wid and int(wid) in existing_ids:
-            db.update_work_item(conn, int(wid), description=desc, amount=amt)
+        existing = stored.get(int(wid)) if wid and int(wid) in existing_ids else None
+        note = _note_for_line(ln, existing)
+        if existing:
+            db.update_work_item(
+                conn, int(wid), description=desc, amount=amt, day_or_note=note,
+            )
             keep_ids.add(int(wid))
         elif desc or amt:
             new_id = db.add_work_item(
-                conn, client_id=client_id, month=month, description=desc, amount=amt,
+                conn,
+                client_id=client_id,
+                month=month,
+                day_or_note=note,
+                description=desc,
+                amount=amt,
             )
             keep_ids.add(new_id)
     for wid in existing_ids - keep_ids:
         db.delete_work_item(conn, wid)
 
-    rows = db.work_for_client_month(conn, month, client_id)
+    rows = [dict(r) for r in db.work_for_client_month(conn, month, client_id)]
     client = db.get_client(conn, client_id)
+    for row in rows:
+        row["mow_price"] = client.get("mow_price")
+        row["hedge_price"] = client.get("hedge_price")
+    _reprice_visits(conn, rows)
     pdf = build_pdf_bytes(
         company=config.COMPANY_NAME,
         client_name=client["name"],
@@ -375,27 +497,62 @@ def tax_table_tsv(conn, month: str) -> str:
     rows = db.work_for_month(conn, month)
     lines = ["client\tdescription\tamount\tmonth"]
     for r in rows:
+        amount = r.get("amount")
+        shown = "" if amount is None else amount
         lines.append(
-            f"{r['client_name']}\t{r.get('description') or ''}\t{r.get('amount') or ''}\t{month}"
+            f"{r['client_name']}\t{r.get('description') or ''}\t{shown}\t{month}"
         )
     return "\n".join(lines) + "\n"
 
 
+def tax_table_xlsx(conn, month: str) -> bytes:
+    """One sheet of invoice lines, including sales tax and the total."""
+    from openpyxl import Workbook
+    from . import db
+
+    rows = db.work_for_month(conn, month)
+    by_client: dict[int, list] = defaultdict(list)
+    order: list[int] = []
+    names: dict[int, str] = {}
+    for row in rows:
+        cid = int(row["client_id"])
+        if cid not in by_client:
+            order.append(cid)
+            names[cid] = row["client_name"]
+        by_client[cid].append(row)
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Tax"
+    sheet.append(["Client", "Date", "Description", "Amount"])
+    for cid in order:
+        for line in compile_invoice_lines(by_client[cid], month):
+            sheet.append([
+                names[cid],
+                line["date"],
+                line["description"],
+                float(line["amount"]),
+            ])
+    buf = io.BytesIO()
+    book.save(buf)
+    return buf.getvalue()
+
+
 def _has_email(bill: dict) -> bool:
-    email = (bill.get("email") or "").strip()
-    return bool(email and "@" in email)
+    return delivery_channel(bill) == "email"
 
 
 def zip_bills(conn, month: str, *, mode: str = "all") -> bytes:
-    """Zip PDFs. mode: all | mailing_only (no email — print/mail) | with_email."""
+    """Zip PDFs. mode: all | mailing_only (paper) | sms_only | with_email."""
     import zipfile
     from . import db
 
     bills = db.bills_for_month(conn, month)
     if mode == "mailing_only":
-        bills = [b for b in bills if not _has_email(b)]
+        bills = [b for b in bills if delivery_channel(b) == "mail"]
+    elif mode == "sms_only":
+        bills = [b for b in bills if delivery_channel(b) == "sms"]
     elif mode == "with_email":
-        bills = [b for b in bills if _has_email(b)]
+        bills = [b for b in bills if delivery_channel(b) == "email"]
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for b in bills:

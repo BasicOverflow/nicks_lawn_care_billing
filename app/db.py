@@ -12,6 +12,8 @@ from psycopg.rows import dict_row
 
 from . import config
 
+_MISSING = object()
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (
   id SERIAL PRIMARY KEY,
@@ -374,11 +376,12 @@ def work_for_month(conn, month: str) -> list[dict]:
     return list(
         conn.execute(
             """
-            SELECT w.*, c.name AS client_name, c.email, c.address, c.phone, c.billing_notes
+            SELECT w.*, c.name AS client_name, c.email, c.address, c.phone,
+                   c.billing_notes, c.mow_price, c.hedge_price
             FROM work_items w
             JOIN clients c ON c.id = w.client_id
             WHERE w.month = %s
-            ORDER BY c.name, w.id
+            ORDER BY w.id
             """,
             (month,),
         ).fetchall()
@@ -476,9 +479,14 @@ def bills_for_month(conn, month: str) -> list[dict]:
     return list(
         conn.execute(
             """
-            SELECT b.*, c.name AS client_name, c.email
+            SELECT b.*, c.name AS client_name, c.email, c.phone, c.billing_notes,
+                   c.prefer_mail, c.address, c.mow_price, c.hedge_price
             FROM bills b JOIN clients c ON c.id = b.client_id
-            WHERE b.month = %s ORDER BY c.name
+            WHERE b.month = %s
+            ORDER BY (
+              SELECT MIN(w.id) FROM work_items w
+              WHERE w.client_id = b.client_id AND w.month = b.month
+            ), b.id
             """,
             (month,),
         ).fetchall()
@@ -489,7 +497,8 @@ def work_for_client_month(conn, month: str, client_id: int) -> list[dict]:
     return list(
         conn.execute(
             """
-            SELECT w.*, c.name AS client_name, c.email, c.address, c.phone, c.billing_notes
+            SELECT w.*, c.name AS client_name, c.email, c.address, c.phone,
+                   c.billing_notes, c.mow_price, c.hedge_price
             FROM work_items w
             JOIN clients c ON c.id = w.client_id
             WHERE w.month = %s AND w.client_id = %s
@@ -583,10 +592,16 @@ def patch_client(
     )
 
 
-def update_work_item(conn, work_id: int, *, description: str, amount) -> None:
+def update_work_item(conn, work_id: int, *, description: str, amount, day_or_note=_MISSING) -> None:
+    if day_or_note is _MISSING:
+        conn.execute(
+            "UPDATE work_items SET description = %s, amount = %s WHERE id = %s",
+            (description, amount, work_id),
+        )
+        return
     conn.execute(
-        "UPDATE work_items SET description = %s, amount = %s WHERE id = %s",
-        (description, amount, work_id),
+        "UPDATE work_items SET description = %s, amount = %s, day_or_note = %s WHERE id = %s",
+        (description, amount, day_or_note, work_id),
     )
 
 
@@ -610,6 +625,54 @@ def patch_work_item(conn, work_id: int, *, description=None, amount=None, month=
 
 def delete_work_item(conn, work_id: int) -> None:
     conn.execute("DELETE FROM work_items WHERE id = %s", (work_id,))
+
+
+def delete_work_from_job(conn, month: str, source_job_id: str) -> int:
+    """Drop lines written by an earlier confirm of this same sheet."""
+    rows = conn.execute(
+        """
+        DELETE FROM work_items
+        WHERE month = %s AND source_job_id = %s
+        RETURNING id
+        """,
+        (month, source_job_id),
+    ).fetchall()
+    return len(rows)
+
+
+def delete_client_month(conn, month: str, client_id: int) -> list[str]:
+    """Remove one client's work and bill for a month. Returns PDF keys."""
+    bills = conn.execute(
+        """
+        DELETE FROM bills WHERE month = %s AND client_id = %s RETURNING s3_key
+        """,
+        (month, client_id),
+    ).fetchall()
+    conn.execute(
+        "DELETE FROM work_items WHERE month = %s AND client_id = %s",
+        (month, client_id),
+    )
+    return [row["s3_key"] for row in bills if row.get("s3_key")]
+
+
+def delete_client(conn, client_id: int) -> list[str]:
+    """Remove a client, their work, and their bill rows. Returns PDF keys."""
+    bills = conn.execute(
+        "SELECT s3_key FROM bills WHERE client_id = %s",
+        (client_id,),
+    ).fetchall()
+    keys = [row["s3_key"] for row in bills if row.get("s3_key")]
+    conn.execute("DELETE FROM work_items WHERE client_id = %s", (client_id,))
+    conn.execute("DELETE FROM bills WHERE client_id = %s", (client_id,))
+    conn.execute("DELETE FROM clients WHERE id = %s", (client_id,))
+    return keys
+
+
+def set_client_email(conn, client_id: int, email: str | None) -> None:
+    conn.execute(
+        "UPDATE clients SET email = %s, updated_at = NOW() WHERE id = %s",
+        (email or None, client_id),
+    )
 
 
 def delete_month_work(conn, month: str) -> dict:

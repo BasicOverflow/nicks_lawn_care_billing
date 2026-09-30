@@ -46,9 +46,13 @@ def normalize_work_marks(text: str) -> str:
 
 
 _DAY_TOKEN = re.compile(r"(?<![\d$.])(?P<day>[1-9]|[12]\d|3[01])(?P<mark>h)?(?![\d.])", re.I)
+# A lettered job, then a price with an optional dollar sign. The price stops
+# before the next digit so "50 12" is not one amount.
 _JOB = re.compile(
-    r"(?P<name>[A-Za-z][^$|]{0,80}?)\s*\$\s*(?P<amt>\d+(?:\.\d{1,2})?)"
+    r"(?P<name>[A-Za-z](?:[^$\d|]{0,80}?))\s*\$?\s*(?P<amt>\d+(?:\.\d{1,2})?)(?!\d)"
 )
+# A house number after a price ("50 12 Main St") is an address, not a visit.
+_HOUSE_AFTER = re.compile(r"\s+(?P<num>\d+)\s+[A-Za-z][A-Za-z0-9 .'-]*")
 
 
 def _money_label(amount: float) -> str:
@@ -60,28 +64,48 @@ def _money_label(amount: float) -> str:
 def parse_work_marks(text: str) -> list[dict]:
     """Split a work cell into mow days, hedge days, priced jobs, and leftover notes.
 
-    A bare day such as 9 is a mowing visit. 15h is a hedge visit. A phrase with
-    a written dollar amount is its own job. Other words, such as "paid", stay
-    as notes and are not jobs.
+    A bare day such as 9 is a mowing visit. 15h, 15H, 15 h, and 15 hedge are
+    hedge visits. A phrase with a written amount, with or without $, is its own
+    job. A house number after that amount is left out. Other words stay notes.
     """
     raw = normalize_work_marks(text)
     if not raw:
         return []
     jobs: list[tuple[int, int, dict]] = []
+    bare = re.match(r"^(?P<dollar>\$)?\s*(?P<amt>\d+(?:\.\d{1,2})?)(?!\d)", raw)
+    if bare:
+        dayish = bool(re.fullmatch(r"(?:[1-9]|[12]\d|3[01])", bare.group("amt")))
+        house = _HOUSE_AFTER.match(raw, bare.end())
+        if bare.group("dollar") or not dayish:
+            end = house.end() if house else bare.end()
+            jobs.append((
+                bare.start(),
+                end,
+                {"kind": "custom", "name": "Custom", "amount": float(bare.group("amt")), "day": None},
+            ))
     for match in _JOB.finditer(raw):
         name = re.sub(r"\s+", " ", match.group("name")).strip(" ;,|")
+        start = match.start()
+        end = match.end()
+        lead = re.match(r"(?i)h\b\s*", name)
+        if lead and re.search(r"(?<![\d.])(?:[1-9]|[12]\d|3[01])$", raw[:start]):
+            start += lead.end()
+            name = name[lead.end():].strip(" ;,|")
         if not name:
             continue
+        house = _HOUSE_AFTER.match(raw, end)
+        if house:
+            end = house.end()
         day = None
         ahead = re.search(
             r"(?<![\d.])([1-9]|[12]\d|3[01])\s*$",
-            raw[: match.start()],
+            raw[: start],
         )
         if ahead:
             day = int(ahead.group(1))
         jobs.append((
-            match.start(),
-            match.end(),
+            start,
+            end,
             {"kind": "custom", "name": name, "amount": float(match.group("amt")), "day": day},
         ))
 
@@ -112,7 +136,7 @@ def parse_work_marks(text: str) -> list[dict]:
     for mark in ordered:
         if (
             mark["kind"] == "note"
-            and str(mark.get("name") or "").lower() == "h"
+            and re.fullmatch(r"h|hedge|hedging", str(mark.get("name") or "").strip(), re.I)
             and collapsed
             and collapsed[-1]["kind"] == "mow"
         ):

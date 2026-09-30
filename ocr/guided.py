@@ -932,6 +932,7 @@ def _extract_work_sheet(
                 rows.append([name] + [""] * (len(columns) - 1))
             else:
                 rows.append(hit)
+        rows.extend(pool)
     else:
         try:
             got = _vision(

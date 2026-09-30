@@ -83,6 +83,17 @@ button, .btn {
 }
 button.secondary, .btn.secondary { background: #5c5c5c; }
 button:disabled, .btn.is-disabled { opacity: .5; cursor: not-allowed; pointer-events: none; }
+#btnLoadModel.is-loaded:disabled {
+  opacity: 1;
+  background: #9a9a9a;
+  color: #fff;
+}
+#modelStatus.model-ready { color: #1b7f3a; font-weight: 700; }
+#modelStatus.model-offline { color: #b00020; font-weight: 700; }
+.prior-add { display: flex; flex-wrap: wrap; gap: .5rem .75rem; align-items: end; margin: .6rem 0; }
+.prior-add label { display: block; font-size: .85rem; }
+.check-line { display: flex; gap: .4rem; align-items: center; }
+.ed-totals { font-weight: 700; }
 button.linkish {
   background: transparent;
   color: var(--accent);

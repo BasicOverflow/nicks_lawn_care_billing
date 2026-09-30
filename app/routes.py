@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,7 +24,9 @@ from .schemas import (
     ChatRequest,
     CommitJob,
     GenerateBills,
+    ClientEmail,
     ClientRoster,
+    ManualWork,
     ReviewDraft,
     ModelStatus,
     ProgressView,
@@ -135,7 +138,9 @@ async def upload(
     local_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     for i, f in enumerate(files):
-        dest = local_dir / (f.filename or f"img_{i}.jpg")
+        raw_name = Path(f.filename or f"img_{i}.jpg").name
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name).strip("._") or f"img_{i}.jpg"
+        dest = local_dir / f"{i + 1:02d}_{safe}"
         data = await f.read()
         dest.write_bytes(data)
         paths.append(dest)
@@ -573,6 +578,49 @@ def save_clients(body: ClientRoster):
     return {"saved": saved, "clients": rows}
 
 
+@router.post("/clients/{client_id}/email", tags=["knowledge"])
+def set_client_email(
+    client_id: int = ApiPath(..., description="Numeric client id."),
+    body: ClientEmail = ...,
+):
+    """Change one client's email. The delivery label follows this value."""
+    email = (body.email or "").strip() or None
+    with db.connect() as conn:
+        if not db.get_client(conn, client_id):
+            raise HTTPException(404, "client not found")
+        db.set_client_email(conn, client_id, email)
+        row = db.get_client(conn, client_id)
+    return {"client": _public_client(row), "delivery": billing.delivery_channel(row)}
+
+
+@router.delete("/clients/{client_id}", tags=["knowledge"])
+def remove_client(client_id: int = ApiPath(..., description="Numeric client id.")):
+    """Delete a client, their work, their bills, and the stored PDFs."""
+    with db.connect() as conn:
+        if not db.get_client(conn, client_id):
+            raise HTTPException(404, "client not found")
+        keys = db.delete_client(conn, client_id)
+    for key in keys:
+        storage.delete_key(key)
+    return {"ok": True, "deleted_pdfs": len(keys)}
+
+
+@router.post("/work", tags=["knowledge"])
+def add_manual_work(body: ManualWork):
+    """Store one typed work row for a month, using the same day and job rules as a sheet."""
+    month = (body.month or "").strip()
+    text = (body.text or "").strip()
+    if not month or not text:
+        raise HTTPException(400, "month and text required")
+    with db.connect() as conn:
+        if not db.get_client(conn, body.client_id):
+            raise HTTPException(404, "client not found")
+        written = knowledge.store_work_text(
+            conn, client_id=body.client_id, month=month, text=text,
+        )
+    return {"ok": True, "lines": written, "month": month, "client_id": body.client_id}
+
+
 @router.post("/billing/generate", tags=["billing"], response_model=AcceptedJob)
 def billing_generate(body: GenerateBills):
     """Build one PDF bill per client who has work in the month.
@@ -621,16 +669,19 @@ def billing_list(
             email = (b.get("email") or "").strip()
             cid = int(b["client_id"])
             detail = billing.get_editable_bill(conn, month, cid) or {}
+            channel = billing.delivery_channel(b)
             out.append({
                 "id": b["id"],
                 "month": b["month"],
                 "client_id": cid,
                 "client_name": b["client_name"],
                 "email": detail.get("email") or email or "",
+                "phone": b.get("phone") or "",
                 "address": detail.get("address") or "",
                 "s3_key": b["s3_key"],
                 "emailed_at": b["emailed_at"].isoformat() if b.get("emailed_at") else None,
-                "has_email": bool(email and "@" in email),
+                "has_email": channel == "email",
+                "delivery": channel,
                 "lines": detail.get("lines") or [],
             })
         return {"bills": out, "smtp_configured": emailer.smtp_configured()}
@@ -654,24 +705,42 @@ def billing_tax(
     )
 
 
+@router.get("/billing/{month}/tax.xlsx", tags=["billing"])
+def billing_tax_xlsx(
+    month: str = ApiPath(..., description="Billing month, YYYY-MM."),
+):
+    """Excel workbook of invoice lines, including sales tax and the total."""
+    with db.connect() as conn:
+        data = billing.tax_table_xlsx(conn, month)
+    return Response(
+        data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="tax_{month}.xlsx"'},
+    )
+
+
 @router.get("/billing/{month}/download.zip", tags=["billing"])
 def billing_zip(
     month: str = ApiPath(..., description="Billing month, YYYY-MM."),
     mode: str = Query(
         "all",
-        description="all: every bill. mailing_only: clients with no email. with_email: clients who have an email.",
+        description="all, mailing_only (paper), sms_only, or with_email.",
     ),
 ):
-    """Zip of PDF bills for the month, filtered by who gets paper mail.
+    """Zip of PDF bills for the month, filtered by delivery.
 
-    `mode` must be `all`, `mailing_only`, or `with_email`. The zip filename
-    includes the month and that mode.
+    `mode` must be `all`, `mailing_only`, `sms_only`, or `with_email`.
     """
-    if mode not in ("all", "mailing_only", "with_email"):
-        raise HTTPException(400, "mode must be all|mailing_only|with_email")
+    if mode not in ("all", "mailing_only", "sms_only", "with_email"):
+        raise HTTPException(400, "mode must be all|mailing_only|sms_only|with_email")
     with db.connect() as conn:
         data = billing.zip_bills(conn, month, mode=mode)
-    suffix = {"all": "all", "mailing_only": "mailing_only", "with_email": "with_email"}[mode]
+    suffix = {
+        "all": "all",
+        "mailing_only": "mail",
+        "sms_only": "sms",
+        "with_email": "with_email",
+    }[mode]
     return Response(
         data,
         media_type="application/zip",
@@ -725,6 +794,49 @@ def billing_edit_save(
     except ValueError as e:
         raise HTTPException(404, str(e)) from e
     return {"ok": True, "bill": saved, "detail": detail}
+
+
+@router.delete("/billing/{month}/{client_id}", tags=["billing"])
+def billing_delete(
+    month: str = ApiPath(..., description="Billing month, YYYY-MM."),
+    client_id: int = ApiPath(..., description="Numeric client id."),
+):
+    """Delete this client's bill and work for the month, including the PDF."""
+    with db.connect() as conn:
+        if not db.get_client(conn, client_id):
+            raise HTTPException(404, "client not found")
+        keys = db.delete_client_month(conn, month, client_id)
+    for key in keys:
+        storage.delete_key(key)
+    return {"ok": True}
+
+
+@router.post("/billing/{month}/sms-email", tags=["billing"], response_model=AcceptedJob)
+def billing_sms_email(
+    month: str = ApiPath(..., description="Billing month, YYYY-MM."),
+):
+    """Email the SMS bills to Nick so he can text them. Clients are not emailed."""
+    if not emailer.smtp_configured():
+        raise HTTPException(400, "SMTP not configured")
+    jid = jobs.new_job("email", f"Emailing SMS bills for {month}…")
+
+    def run():
+        jobs.use(jid)
+        try:
+            def prog(pct, msg):
+                jobs.set_progress(percent=pct, message=msg)
+
+            with db.connect() as conn:
+                result = emailer.email_sms_pack(conn, month, on_progress=prog)
+            jobs.done(
+                f"Sent {result['messages']} message(s) covering {result['sent']} SMS bills",
+                detail=result,
+            )
+        except Exception as e:
+            jobs.fail(str(e))
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": jid}
 
 
 @router.get("/billing/pdf", tags=["billing"])

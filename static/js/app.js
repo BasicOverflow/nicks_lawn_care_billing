@@ -13,27 +13,60 @@ async function api(path, opts = {}) {
 
 function el(id) { return document.getElementById(id); }
 
+let modelCheck = null;
+let modelDeploying = false;
+
+function paintModel(up, label) {
+  const node = el("modelStatus");
+  if (node) {
+    node.textContent = label;
+    node.classList.toggle("model-ready", !!up);
+    node.classList.toggle("model-offline", !up);
+  }
+  const btn = el("btnLoadModel");
+  if (!btn) return;
+  if (up) {
+    btn.disabled = true;
+    btn.textContent = "Model Loaded";
+    btn.classList.add("is-loaded");
+  } else if (modelDeploying) {
+    btn.disabled = true;
+    btn.textContent = "Load model";
+    btn.classList.remove("is-loaded");
+  } else {
+    btn.disabled = false;
+    btn.textContent = "Load model";
+    btn.classList.remove("is-loaded");
+  }
+}
+
 async function refreshModel() {
+  if (modelCheck) return;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
+  modelCheck = fetch("/api/model/status", { signal: ctrl.signal });
   try {
-    const s = await api("/api/model/status");
-    const node = el("modelStatus");
-    if (node) node.textContent = s.up ? `Model ${s.id}: ready` : `Model ${s.id}: offline`;
-    const btn = el("btnLoadModel");
-    if (btn) btn.disabled = !!s.up;
-  } catch (e) {
-    const node = el("modelStatus");
-    if (node) node.textContent = "Model: unreachable";
+    const r = await modelCheck;
+    if (!r.ok) throw new Error("status");
+    const s = await r.json();
+    paintModel(!!s.up, s.up ? `Model ${s.id}: ready` : `Model ${s.id}: offline`);
+  } catch (_) {
+    paintModel(false, "Model: unreachable");
+  } finally {
+    clearTimeout(timer);
+    modelCheck = null;
   }
 }
 
 async function loadModel() {
-  const btn = el("btnLoadModel");
-  if (btn) btn.disabled = true;
+  modelDeploying = true;
+  paintModel(false, el("modelStatus") ? el("modelStatus").textContent : "Model: …");
   try {
     await api("/api/model/load", { method: "POST" });
   } catch (e) {
+    modelDeploying = false;
     alert(e.message);
-    if (btn) btn.disabled = false;
+    refreshModel();
   }
 }
 
@@ -123,7 +156,7 @@ async function pollProgress() {
     });
     const ocrLive = !!(p.ocr_busy || jobs.some(job => job.kind === "ocr" && job.status === "running"));
     window._ocrRunning = ocrLive;
-    refreshModel();
+    modelDeploying = jobs.some(job => job.kind === "model" && job.status === "running");
     if (ocrLive) window._sawOcr = true;
     if (jobs.some(job => job.kind === "ocr" && job.status !== "running")) window._sawOcr = false;
     else if (window._sawOcr && !ocrLive) {
@@ -135,6 +168,7 @@ async function pollProgress() {
       window._sawOcr = false;
     }
   } catch (_) {}
+  refreshModel();
 }
 
 document.addEventListener("DOMContentLoaded", () => {

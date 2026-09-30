@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Billing — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=25"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=28"/>
 </head>
 <body>
 <header class="top">
@@ -12,6 +12,7 @@
   <nav class="nav">
     <a href="/data">Data</a>
     <a class="active" href="/billing">Billing</a>
+    <a href="/howto">How to use</a>
   </nav>
   <div class="model-bar">
     <span id="modelStatus">Model: …</span>
@@ -21,7 +22,7 @@
 </header>
 <main>
   <h1>Billing</h1>
-  <p class="hint">Generate invoices from confirmed knowledge. Reloading the page clears the bill list — generate again to view, download, or email.</p>
+  <p class="hint">Generate invoices from confirmed work. The list loads from the server, including after a reload.</p>
 
   <section class="card">
     <h2>Month</h2>
@@ -39,13 +40,15 @@
     <div class="row-actions">
       <button type="button" id="btnViewAll" class="secondary">View all bills</button>
       <button type="button" id="btnEmail">Email all bills with an email</button>
+      <button type="button" id="btnSmsEmail" class="secondary">Email SMS bills to Nick</button>
     </div>
     <p class="msg" id="mailMsg"></p>
     <div id="billList"><p class="hint">No PDFs yet for this month — click Generate.</p></div>
     <div class="row-actions">
       <a class="btn is-disabled" id="btnZipAll" href="#">Download all bills</a>
-      <a class="btn secondary is-disabled" id="btnZipMail" href="#">Download all mailing-only bills</a>
-      <a class="btn secondary" id="btnTax" href="#">Tax table (TSV)</a>
+      <a class="btn secondary is-disabled" id="btnZipMail" href="#">Download mail PDFs only</a>
+      <a class="btn secondary is-disabled" id="btnZipSms" href="#">Download SMS bills only</a>
+      <a class="btn secondary" id="btnTax" href="#">Tax table (Excel)</a>
     </div>
   </section>
 
@@ -57,7 +60,7 @@
     <div id="viewerStack" class="pdf-stack"></div>
   </section>
 </main>
-<script src="/static/js/app.js?v=12"></script>
+<script src="/static/js/app.js?v=13"></script>
 <script>
 let lastBills = [];
 // Months generated in this page load only. A reload starts empty.
@@ -85,6 +88,55 @@ function escapeAttr(s) {
   }[c]));
 }
 
+function cents(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  const neg = n < 0;
+  const scaled = Math.abs(n) * 100;
+  const rounded = Math.floor(scaled + 0.5 + 1e-8);
+  return (neg ? -rounded : rounded) / 100;
+}
+
+function moneyText(value) {
+  const n = cents(value);
+  return Number.isInteger(n) ? `$${n}` : `$${n.toFixed(2)}`;
+}
+
+function editorLines(editor) {
+  const tbody = editor.querySelector(".ed-lines-body");
+  if (!tbody) return [];
+  return [...tbody.querySelectorAll("tr")].map(tr => ({
+    id: tr.dataset.id ? Number(tr.dataset.id) : null,
+    description: tr.querySelector(".ed-desc").value,
+    amount: tr.querySelector(".ed-amt").value,
+    kind: tr.dataset.kind || "visit",
+    prior_month: tr.dataset.priorMonth || "",
+  }));
+}
+
+function refreshEditorTotals(editor) {
+  const box = editor.querySelector(".ed-totals");
+  if (!box) return;
+  let taxable = 0;
+  let after = 0;
+  editorLines(editor).forEach(line => {
+    const desc = (line.description || "").trim();
+    if (!desc && line.amount === "") return;
+    const kind = desc.toLowerCase().startsWith("discount") ? "discount" : (line.kind || "visit");
+    let amount = Number(line.amount);
+    if (!Number.isFinite(amount)) amount = 0;
+    amount = cents(amount);
+    if (kind === "discount") amount = -Math.abs(amount);
+    if (kind === "prior_taxed") after += amount;
+    else taxable += amount;
+  });
+  taxable = cents(taxable);
+  after = cents(after);
+  const tax = cents(taxable * 0.0635);
+  const total = cents(taxable + tax + after);
+  box.textContent = `Sales tax ${moneyText(tax)}    Total ${moneyText(total)}`;
+}
+
 function fillEditor(editor, detail) {
   const nameEl = editor.querySelector(".ed-name");
   const emailEl = editor.querySelector(".ed-email");
@@ -101,10 +153,13 @@ function fillEditor(editor, detail) {
   rows.forEach(line => {
     const tr = document.createElement("tr");
     tr.dataset.id = line.id != null ? String(line.id) : "";
+    tr.dataset.kind = line.kind || "visit";
+    tr.dataset.priorMonth = line.prior_month || "";
     const tdDesc = document.createElement("td");
     const inDesc = document.createElement("input");
     inDesc.className = "ed-desc";
     inDesc.value = line.description != null ? String(line.description) : "";
+    inDesc.addEventListener("input", () => refreshEditorTotals(editor));
     tdDesc.appendChild(inDesc);
     const tdAmt = document.createElement("td");
     tdAmt.className = "amt-cell";
@@ -113,6 +168,7 @@ function fillEditor(editor, detail) {
     inAmt.type = "number";
     inAmt.step = "0.01";
     inAmt.value = line.amount != null && line.amount !== "" ? String(line.amount) : "";
+    inAmt.addEventListener("input", () => refreshEditorTotals(editor));
     tdAmt.appendChild(inAmt);
     const tdDel = document.createElement("td");
     const btn = document.createElement("button");
@@ -124,14 +180,18 @@ function fillEditor(editor, detail) {
         inDesc.value = "";
         inAmt.value = "";
         tr.dataset.id = "";
-        return;
+        tr.dataset.kind = "visit";
+        tr.dataset.priorMonth = "";
+      } else {
+        tr.remove();
       }
-      tr.remove();
+      refreshEditorTotals(editor);
     };
     tdDel.appendChild(btn);
     tr.append(tdDesc, tdAmt, tdDel);
     tbody.appendChild(tr);
   });
+  refreshEditorTotals(editor);
 }
 
 function showViewer(bills, title) {
@@ -147,9 +207,10 @@ function showViewer(bills, title) {
       <div class="pdf-toolbar">
         <h3>${escapeHtml(b.client_name)}</h3>
         <button type="button" class="secondary btn-edit-bill">Edit bill</button>
+        <button type="button" class="secondary btn-delete-bill">Delete bill</button>
       </div>
       <div class="bill-editor" hidden>
-        <p class="hint">Fields below are filled from the current invoice. Edit any line or contact info, then save to regenerate the PDF.</p>
+        <p class="hint">Edit lines, add a discount, or add a previous month’s total. Sales tax is 6.35% of this month after discounts, plus a previous total unless that amount already includes tax.</p>
         <label>Client</label>
         <input class="ed-name" readonly/>
         <label>Email</label>
@@ -159,8 +220,18 @@ function showViewer(bills, title) {
         <label>Line items</label>
         <table class="edit-lines"><thead><tr><th>Description</th><th>Amount</th><th></th></tr></thead>
         <tbody class="ed-lines-body"></tbody></table>
+        <p class="ed-totals hint"></p>
+        <div class="prior-add">
+          <label>Previous month</label>
+          <input class="prior-month" type="month"/>
+          <label>Total from that month</label>
+          <input class="prior-amt" type="number" step="0.01"/>
+          <label class="check-line"><input class="prior-taxed" type="checkbox"/> This amount already includes sales tax</label>
+        </div>
         <div class="row-actions">
           <button type="button" class="secondary ed-add">Add line</button>
+          <button type="button" class="secondary ed-discount">Add discount</button>
+          <button type="button" class="secondary ed-prior">Add bill total from previous month</button>
           <button type="button" class="ed-save">Save &amp; regenerate PDF</button>
           <button type="button" class="secondary ed-cancel">Cancel</button>
         </div>
@@ -169,6 +240,18 @@ function showViewer(bills, title) {
       <iframe class="pdf-frame" title="${escapeHtml(b.client_name)}" src="${pdfUrl(b.s3_key)}"></iframe>`;
     stack.appendChild(block);
     wireEditor(block, b);
+    const del = block.querySelector(".btn-delete-bill");
+    del.onclick = async () => {
+      const month = el("month").value;
+      if (!window.confirm(`Delete the ${month} bill for ${b.client_name}? This month’s work for them is removed too.`)) return;
+      try {
+        await api(`/api/billing/${encodeURIComponent(month)}/${encodeURIComponent(b.client_id)}`, { method: "DELETE" });
+        block.remove();
+        refreshBills();
+      } catch (e) {
+        alert(e.message);
+      }
+    };
   });
   card.hidden = false;
   card.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -231,20 +314,37 @@ function wireEditor(block, bill) {
     }
   };
 
-  editor.querySelector(".ed-add").onclick = () => {
+  const refill = (extra) => {
     fillEditor(editor, {
       client_name: editor.querySelector(".ed-name").value,
       email: editor.querySelector(".ed-email").value,
       address: editor.querySelector(".ed-address").value,
-      lines: [
-        ...[...tbody.querySelectorAll("tr")].map(tr => ({
-          id: tr.dataset.id || null,
-          description: tr.querySelector(".ed-desc").value,
-          amount: tr.querySelector(".ed-amt").value,
-        })),
-        { description: "", amount: "" },
-      ],
+      lines: [...editorLines(editor), ...(extra || [])],
     });
+  };
+
+  editor.querySelector(".ed-add").onclick = () => refill([{ description: "", amount: "", kind: "visit" }]);
+  editor.querySelector(".ed-discount").onclick = () => refill([{ description: "Discount", amount: "", kind: "discount" }]);
+  editor.querySelector(".ed-prior").onclick = () => {
+    const priorMonth = editor.querySelector(".prior-month").value;
+    const amount = editor.querySelector(".prior-amt").value;
+    if (!priorMonth || amount === "") {
+      msg.textContent = "Enter the previous month and its total.";
+      msg.className = "msg err";
+      return;
+    }
+    const taxed = editor.querySelector(".prior-taxed").checked;
+    refill([{
+      description: `Previous bill (${priorMonth})`,
+      amount,
+      kind: taxed ? "prior_taxed" : "prior",
+      prior_month: priorMonth,
+    }]);
+    editor.querySelector(".prior-amt").value = "";
+    msg.textContent = taxed
+      ? "Previous total will be added after this month’s tax."
+      : "Previous total will be included in this month’s sales tax.";
+    msg.className = "msg ok";
   };
 
   editor.querySelector(".ed-cancel").onclick = () => {
@@ -255,11 +355,7 @@ function wireEditor(block, bill) {
 
   editor.querySelector(".ed-save").onclick = async () => {
     const month = el("month").value;
-    const lines = [...tbody.querySelectorAll("tr")].map(tr => ({
-      id: tr.dataset.id ? Number(tr.dataset.id) : null,
-      description: tr.querySelector(".ed-desc").value,
-      amount: tr.querySelector(".ed-amt").value,
-    }));
+    const lines = editorLines(editor);
     msg.textContent = "Saving…";
     msg.className = "msg";
     try {
@@ -309,18 +405,19 @@ async function loadMonths() {
 function setPackLinks(month, enabled) {
   const zipAll = el("btnZipAll");
   const zipMail = el("btnZipMail");
-  if (month) el("btnTax").href = `/api/billing/${month}/tax.tsv`;
-  if (!enabled || !month) {
-    zipAll.href = "#";
-    zipMail.href = "#";
-    zipAll.classList.add("is-disabled");
-    zipMail.classList.add("is-disabled");
-    return;
-  }
-  zipAll.href = `/api/billing/${month}/download.zip?mode=all`;
-  zipMail.href = `/api/billing/${month}/download.zip?mode=mailing_only`;
-  zipAll.classList.remove("is-disabled");
-  zipMail.classList.remove("is-disabled");
+  const zipSms = el("btnZipSms");
+  if (month) el("btnTax").href = `/api/billing/${encodeURIComponent(month)}/tax.xlsx`;
+  [zipAll, zipMail, zipSms].forEach(node => {
+    if (!node) return;
+    node.href = "#";
+    node.classList.add("is-disabled");
+  });
+  if (!enabled || !month) return;
+  const base = `/api/billing/${encodeURIComponent(month)}/download.zip`;
+  zipAll.href = `${base}?mode=all`;
+  zipMail.href = `${base}?mode=mailing_only`;
+  zipSms.href = `${base}?mode=sms_only`;
+  [zipAll, zipMail, zipSms].forEach(node => node && node.classList.remove("is-disabled"));
 }
 
 function clearBillList() {
@@ -332,36 +429,34 @@ function clearBillList() {
 }
 
 function showMonthBills() {
-  const month = el("month").value;
-  if (month && generatedMonths.has(month)) {
-    refreshBills();
-    return;
-  }
-  clearBillList();
+  refreshBills();
 }
+
+const DELIVERY_LABEL = { email: "email", sms: "SMS", mail: "paper" };
 
 async function refreshBills() {
   const month = el("month").value;
-  if (!month || !generatedMonths.has(month)) {
+  if (!month) {
     clearBillList();
     return;
   }
-  setPackLinks(month, true);
+  setPackLinks(month, false);
   try {
-    const r = await api(`/api/billing/${month}/list`);
+    const r = await api(`/api/billing/${encodeURIComponent(month)}/list`);
     lastBills = r.bills || [];
     const wrap = el("billList");
+    setPackLinks(month, lastBills.length > 0);
     if (!lastBills.length) {
       wrap.innerHTML = "<p class='hint'>No PDFs yet for this month — click Generate.</p>";
       return;
     }
     let html = "<table><thead><tr><th>Client</th><th>Email</th><th>Delivery</th><th>View</th><th>Emailed</th></tr></thead><tbody>";
     lastBills.forEach((b, i) => {
-      const delivery = b.has_email ? "email" : "mail";
-      html += `<tr>
+      const delivery = DELIVERY_LABEL[b.delivery] || (b.has_email ? "email" : "paper");
+      html += `<tr data-bill="${i}">
         <td>${escapeHtml(b.client_name)}</td>
-        <td>${escapeHtml(b.email || "—")}</td>
-        <td>${delivery}</td>
+        <td><input class="bill-email" type="text" value="${escapeAttr(b.email || "")}" data-bill="${i}"/></td>
+        <td class="bill-delivery">${delivery}</td>
         <td><button type="button" class="linkish" data-view="${i}">View</button></td>
         <td>${b.emailed_at ? "yes" : "no"}</td>
       </tr>`;
@@ -376,6 +471,28 @@ async function refreshBills() {
         const b = lastBills[Number(btn.getAttribute("data-view"))];
         if (b) showViewer([b], b.client_name);
       };
+    });
+    wrap.querySelectorAll(".bill-email").forEach(input => {
+      input.addEventListener("change", async () => {
+        const bill = lastBills[Number(input.dataset.bill)];
+        if (!bill) return;
+        const row = input.closest("tr");
+        try {
+          const r = await api(`/api/clients/${bill.client_id}/email`, {
+            method: "POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({ email: input.value }),
+          });
+          bill.email = (r.client && r.client.email) || "";
+          bill.delivery = r.delivery;
+          bill.has_email = r.delivery === "email";
+          const cell = row && row.querySelector(".bill-delivery");
+          if (cell) cell.textContent = DELIVERY_LABEL[r.delivery] || r.delivery;
+        } catch (e) {
+          input.value = bill.email || "";
+          alert(e.message);
+        }
+      });
     });
   } catch (e) {
     el("billList").innerHTML = `<p class='msg err'>${escapeHtml(e.message)}</p>`;
@@ -415,7 +532,7 @@ el("btnGenerate").onclick = async () => {
 el("btnEmail").onclick = async () => {
   const month = el("month").value;
   if (!month) return;
-  if (!generatedMonths.has(month)) {
+  if (!lastBills.length) {
     el("mailMsg").textContent = "Generate PDFs for this month first.";
     el("mailMsg").className = "msg";
     return;
@@ -423,6 +540,24 @@ el("btnEmail").onclick = async () => {
   try {
     await api(`/api/billing/${month}/email`, { method: "POST" });
     el("mailMsg").textContent = "Emailing bills that have an email…";
+  } catch (e) {
+    el("mailMsg").textContent = e.message;
+    el("mailMsg").className = "msg err";
+  }
+};
+
+el("btnSmsEmail").onclick = async () => {
+  const month = el("month").value;
+  if (!month) return;
+  if (!lastBills.length) {
+    el("mailMsg").textContent = "Generate PDFs for this month first.";
+    el("mailMsg").className = "msg";
+    return;
+  }
+  try {
+    await api(`/api/billing/${encodeURIComponent(month)}/sms-email`, { method: "POST" });
+    el("mailMsg").textContent = "Emailing SMS bills to Nick…";
+    el("mailMsg").className = "msg";
   } catch (e) {
     el("mailMsg").textContent = e.message;
     el("mailMsg").className = "msg err";
@@ -472,7 +607,6 @@ window.onJobDone = (p) => {
     return;
   }
   if (p.kind === "email") {
-    if (!generatedMonths.has(el("month").value)) return;
     el("mailMsg").textContent = p.message;
     el("mailMsg").className = "msg ok";
     refreshBills();

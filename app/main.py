@@ -49,7 +49,7 @@ async def full_page_bodies(request: Request, call_next):
     range. FileResponse answers 206, and a slice of the page never renders.
     """
     path = request.url.path
-    if path in {"/", "/data", "/billing"} or path.startswith("/static/"):
+    if path in {"/", "/data", "/billing", "/howto"} or path.startswith("/static/"):
         request.scope["headers"] = [
             (key, value) for key, value in request.scope["headers"] if key.lower() != b"range"
         ]
@@ -86,6 +86,12 @@ def data_page():
 def billing_page():
     """Monthly bills, downloads, and email."""
     return FileResponse(STATIC / "billing.html")
+
+
+@app.get("/howto", include_in_schema=False)
+def howto_page():
+    """Short instructions for generating and reviewing bills."""
+    return FileResponse(STATIC / "howto.html")
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")

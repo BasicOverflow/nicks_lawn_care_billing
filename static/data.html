@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Data — Nick's Lawn Care</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=27"/>
+  <link rel="stylesheet" href="/static/css/app.css?v=28"/>
 </head>
 <body>
 <header class="top">
@@ -12,6 +12,7 @@
   <nav class="nav">
     <a class="active" href="/data">Data</a>
     <a href="/billing">Billing</a>
+    <a href="/howto">How to use</a>
   </nav>
   <div class="model-bar">
     <span id="modelStatus">Model: …</span>
@@ -67,6 +68,19 @@
     <p class="hint" id="queueMsg"></p>
   </section>
 
+  <section class="card" id="manualWork">
+    <h2>Add work without a photo</h2>
+    <p class="hint">Uses the billing month above. Type days and jobs the same way they appear on a sheet, such as 9 16, 15h, or bush trimming 50.</p>
+    <label for="manualClient">Client</label>
+    <select id="manualClient"></select>
+    <label for="manualText">Days and jobs</label>
+    <input id="manualText" type="text" placeholder="9 16 or 15h or bush trimming 50"/>
+    <div class="row-actions">
+      <button type="button" id="btnManualWork">Add work</button>
+    </div>
+    <p class="msg" id="manualMsg"></p>
+  </section>
+
   <section class="card" id="reviewSection" hidden>
     <h2>Review</h2>
     <p class="hint">Each day is its own box, side by side. A plain number is a mow. A number with h is a hedge. An odd job sits in one box with the name and the price written on the sheet.</p>
@@ -112,7 +126,7 @@
   <div class="col-resize left" role="separator" aria-orientation="vertical" aria-label="Resize middle windows"></div>
   <div class="col-resize right" role="separator" aria-orientation="vertical" aria-label="Resize middle windows"></div>
 </main>
-<script src="/static/js/app.js?v=12"></script>
+<script src="/static/js/app.js?v=13"></script>
 <script>
 let currentJob = null;
 let currentExtract = null;
@@ -634,6 +648,9 @@ window.onJobDone = (p) => {
       el("uploadMsg").textContent = `OCR done — review below.${qnote}`;
       el("uploadMsg").className = "msg ok";
       el("reviewMsg").textContent = "";
+      api("/api/review/open").then(open => {
+        if (open && open.job_id === currentJob) reviewStamp = open.updated_at || reviewStamp;
+      }).catch(() => {});
     } else {
       el("uploadMsg").textContent = `OCR finished with no rows to review.${qnote}`;
       el("uploadMsg").className = "msg";
@@ -834,14 +851,28 @@ function addClientRow(client) {
   tr.appendChild(mail);
   const tools = document.createElement("td");
   tools.className = "row-tools";
-  if (!c.id) {
-    const rm = document.createElement("button");
-    rm.type = "button";
-    rm.className = "linkish";
-    rm.textContent = "Remove";
-    rm.onclick = () => tr.remove();
-    tools.appendChild(rm);
-  }
+  const rm = document.createElement("button");
+  rm.type = "button";
+  rm.className = "linkish";
+  rm.textContent = c.id ? "Delete" : "Remove";
+  rm.onclick = async () => {
+    if (!c.id) {
+      tr.remove();
+      return;
+    }
+    const label = (c.name || "this client").trim();
+    if (!window.confirm(`Delete ${label}? Their work and bills are removed too.`)) return;
+    try {
+      await api("/api/clients/" + c.id, { method: "DELETE" });
+      tr.remove();
+      el("clientMsg").textContent = "Client deleted.";
+      el("clientMsg").className = "msg ok";
+    } catch (e) {
+      el("clientMsg").textContent = e.message;
+      el("clientMsg").className = "msg err";
+    }
+  };
+  tools.appendChild(rm);
   tr.appendChild(tools);
   el("clientBody").appendChild(tr);
 }
@@ -852,7 +883,7 @@ function renderClients(clients) {
   const table = document.createElement("table");
   table.innerHTML = `<thead><tr>
     <th>Name</th><th>Address</th><th class="price">Mow</th><th class="price">Hedge</th>
-    <th>Phone</th><th>Email</th><th class="notes">Notes</th><th>Mail</th><th></th>
+    <th>Phone</th><th>Email</th><th class="notes">Notes</th><th>Mail</th><th>Delete</th>
   </tr></thead>`;
   const body = document.createElement("tbody");
   body.id = "clientBody";
@@ -903,10 +934,27 @@ async function loadClients() {
   try {
     const r = await api("/api/clients");
     renderClients(r.clients || []);
+    fillManualClients(r.clients || []);
+    clientsLoaded = true;
   } catch (e) {
+    clientsLoaded = false;
     el("clientMsg").textContent = e.message;
     el("clientMsg").className = "msg err";
   }
+}
+
+function fillManualClients(clients) {
+  const sel = el("manualClient");
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = "";
+  (clients || []).forEach(c => {
+    const o = document.createElement("option");
+    o.value = String(c.id);
+    o.textContent = c.name;
+    sel.appendChild(o);
+  });
+  if (current) sel.value = current;
 }
 
 let clientsLoaded = false;
@@ -917,10 +965,7 @@ function setClientsOpen(open) {
   el("clientPanel").hidden = !open;
   el("btnToggleClients").textContent = open ? "Hide clients list" : "View/edit clients list";
   document.querySelector("main.split-data").classList.toggle("clients-open", open);
-  if (open && !clientsLoaded) {
-    clientsLoaded = true;
-    loadClients();
-  }
+  if (open && !clientsLoaded) loadClients();
 }
 
 el("btnToggleClients").onclick = () => setClientsOpen(!clientsOpen);
@@ -989,6 +1034,34 @@ function refreshMonthSuggest() {
   };
   box.append(btn);
 }
+
+el("btnManualWork").onclick = async () => {
+  const month = el("month").value;
+  const clientId = el("manualClient").value;
+  const text = el("manualText").value.trim();
+  const msg = el("manualMsg");
+  if (!month || !clientId || !text) {
+    msg.textContent = "Pick a month, a client, and the days or job.";
+    msg.className = "msg err";
+    return;
+  }
+  msg.textContent = "Saving…";
+  msg.className = "msg";
+  try {
+    const r = await api("/api/work", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ client_id: Number(clientId), month, text }),
+    });
+    msg.textContent = `Saved ${r.lines} line${r.lines === 1 ? "" : "s"} for ${month}.`;
+    msg.className = "msg ok";
+    el("manualText").value = "";
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = "msg err";
+  }
+};
+loadClients();
 
 el("month").addEventListener("change", refreshMonthSuggest);
 el("month").value = currentBillingMonth();

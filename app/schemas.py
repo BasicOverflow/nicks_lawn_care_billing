@@ -102,6 +102,25 @@ class BillLineIn(BaseModel):
         None,
         description="Dollar amount. Blank becomes 0.",
     )
+    kind: str = Field(
+        "visit",
+        description="visit, discount, prior (taxed with this month), or prior_taxed (added after tax).",
+    )
+    prior_month: str = Field("", description="Month label for a previous-bill total.")
+
+
+class ManualWork(BaseModel):
+    """One work row typed in, without a photo."""
+
+    client_id: int = Field(..., description="Client id from GET /api/clients.")
+    month: str = Field(..., description="Billing month, YYYY-MM.")
+    text: str = Field(..., description="Days and jobs, such as 9 16 or bush trimming 50.")
+
+
+class ClientEmail(BaseModel):
+    """Replacement email for one client. Blank clears it."""
+
+    email: str = Field("", description="Email addresses. Blank clears the field.")
 
 
 class SaveBill(BaseModel):
