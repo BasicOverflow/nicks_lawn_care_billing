@@ -130,6 +130,8 @@ def test_dear_is_the_given_name():
     assert _first_name("SMITH, Mary") == "Mary"
     assert _first_name("AGOSTINI, Lillian") == "Lillian"
     assert _first_name("SMITH, MARY") == "Mary"
+    assert _first_name("SMITH Mary") == "Mary"
+    assert _first_name("Kelly Small") == "Kelly"
 
 
 def test_delivery():

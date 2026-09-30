@@ -60,8 +60,12 @@ def _first_name(name: str) -> str:
     if "," in raw:
         given = raw.split(",", 1)[1].strip()
     else:
-        given = raw
-    parts = given.split()
+        parts = raw.split()
+        if len(parts) >= 2 and parts[0].isupper():
+            given = parts[-1]
+        else:
+            given = raw
+    parts = [part for part in given.split() if part not in {"&", "and"}]
     word = parts[0] if parts else ""
     if not word:
         return "Customer"
