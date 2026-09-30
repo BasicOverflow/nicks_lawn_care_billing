@@ -1293,9 +1293,8 @@ def _has_email(bill: dict) -> bool:
     return delivery_channel(bill) == "email"
 
 
-def zip_bills(conn, month: str, *, mode: str = "all") -> bytes:
-    """Zip PDFs. mode: all | mailing_only (paper) | sms_only | with_email."""
-    import zipfile
+def _bills_for_download(conn, month: str, *, mode: str) -> list[dict]:
+    """PDF bills for the month, filtered by delivery mode."""
     from . import db
 
     bills = db.bills_for_month(conn, month)
@@ -1305,6 +1304,33 @@ def zip_bills(conn, month: str, *, mode: str = "all") -> bytes:
         bills = [b for b in bills if delivery_channel(b) == "sms"]
     elif mode == "with_email":
         bills = [b for b in bills if delivery_channel(b) == "email"]
+    return bills
+
+
+def merge_bills_pdf(conn, month: str, *, mode: str = "all") -> bytes:
+    """One PDF with every matching bill, each on its own page(s)."""
+    from pypdf import PdfReader, PdfWriter
+
+    bills = _bills_for_download(conn, month, mode=mode)
+    if not bills:
+        raise ValueError("No bills match that filter")
+    writer = PdfWriter()
+    for bill in bills:
+        reader = PdfReader(io.BytesIO(storage.get_bytes(bill["s3_key"])))
+        for page in reader.pages:
+            writer.add_page(page)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def zip_bills(conn, month: str, *, mode: str = "all") -> bytes:
+    """Zip PDFs. mode: all | mailing_only (paper) | sms_only | with_email."""
+    import zipfile
+
+    bills = _bills_for_download(conn, month, mode=mode)
+    if not bills:
+        raise ValueError("No bills match that filter")
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for b in bills:

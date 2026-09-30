@@ -8,6 +8,7 @@ Pillow>=10.0
 numpy>=1.26
 opencv-python-headless>=4.8
 reportlab>=4.0
+pypdf>=4.0
 openpyxl>=3.1
 # OCR / ray-hive (install editable from your Desktop checkout if needed):
 #   py -3 -m pip install -e C:\Users\Peter\Desktop\ray-hive

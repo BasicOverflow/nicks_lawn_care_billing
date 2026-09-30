@@ -757,6 +757,35 @@ def billing_tax_xlsx(
     )
 
 
+@router.get("/billing/{month}/download.pdf", tags=["billing"])
+def billing_pack_pdf(
+    month: str = ApiPath(..., description="Billing month, YYYY-MM."),
+    mode: str = Query(
+        "mailing_only",
+        description="mailing_only (paper), all, sms_only, or with_email.",
+    ),
+):
+    """Single PDF with every matching bill for one print job."""
+    if mode not in ("all", "mailing_only", "sms_only", "with_email"):
+        raise HTTPException(400, "mode must be all|mailing_only|sms_only|with_email")
+    try:
+        with db.connect() as conn:
+            data = billing.merge_bills_pdf(conn, month, mode=mode)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    suffix = {
+        "all": "all",
+        "mailing_only": "mail",
+        "sms_only": "sms",
+        "with_email": "with_email",
+    }[mode]
+    return Response(
+        data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="bills_{month}_{suffix}.pdf"'},
+    )
+
+
 @router.get("/billing/{month}/download.zip", tags=["billing"])
 def billing_zip(
     month: str = ApiPath(..., description="Billing month, YYYY-MM."),
@@ -771,8 +800,11 @@ def billing_zip(
     """
     if mode not in ("all", "mailing_only", "sms_only", "with_email"):
         raise HTTPException(400, "mode must be all|mailing_only|sms_only|with_email")
-    with db.connect() as conn:
-        data = billing.zip_bills(conn, month, mode=mode)
+    try:
+        with db.connect() as conn:
+            data = billing.zip_bills(conn, month, mode=mode)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
     suffix = {
         "all": "all",
         "mailing_only": "mail",

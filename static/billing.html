@@ -90,9 +90,9 @@
     <div class="row-actions">
       <button type="button" id="btnEmail">Email all bills with an email</button>
       <button type="button" id="btnSmsEmail" class="secondary">Email SMS bills to Nick</button>
-      <a class="btn is-disabled" id="btnZipAll" href="#">Download all bills</a>
-      <a class="btn secondary is-disabled" id="btnZipMail" href="#">Download mail PDFs only</a>
-      <a class="btn secondary is-disabled" id="btnZipSms" href="#">Download SMS bills only</a>
+      <button type="button" class="btn is-disabled" id="btnZipAll" disabled>Download all bills</button>
+      <button type="button" class="btn secondary is-disabled" id="btnZipMail" disabled>Download mail bills (one PDF)</button>
+      <button type="button" class="btn secondary is-disabled" id="btnZipSms" disabled>Download SMS bills only</button>
       <a class="btn secondary" id="btnTax" href="#">Tax table (Excel)</a>
     </div>
     <p class="msg" id="mailMsg"></p>
@@ -106,7 +106,7 @@
   </section>
 </main>
 
-<script src="/static/js/app.js?v=15"></script>
+<script src="/static/js/app.js?v=16"></script>
 <script>
 let currentJob = null;
 let currentExtract = null;
@@ -1582,22 +1582,50 @@ async function loadMonths() {
   syncBillStep();
 }
 
+let packDownloads = {};
+
 function setPackLinks(month, enabled) {
   const zipAll = el("btnZipAll");
   const zipMail = el("btnZipMail");
   const zipSms = el("btnZipSms");
+  packDownloads = {};
   if (month) el("btnTax").href = `/api/billing/${encodeURIComponent(month)}/tax.xlsx`;
   [zipAll, zipMail, zipSms].forEach(node => {
     if (!node) return;
-    node.href = "#";
+    node.disabled = true;
     node.classList.add("is-disabled");
   });
   if (!enabled || !month) return;
-  const base = `/api/billing/${encodeURIComponent(month)}/download.zip`;
-  zipAll.href = `${base}?mode=all`;
-  zipMail.href = `${base}?mode=mailing_only`;
-  zipSms.href = `${base}?mode=sms_only`;
-  [zipAll, zipMail, zipSms].forEach(node => node && node.classList.remove("is-disabled"));
+  const zipBase = `/api/billing/${encodeURIComponent(month)}/download.zip`;
+  packDownloads = {
+    all: { url: `${zipBase}?mode=all`, name: `bills_${month}_all.zip` },
+    mail: {
+      url: `/api/billing/${encodeURIComponent(month)}/download.pdf?mode=mailing_only`,
+      name: `bills_${month}_mail.pdf`,
+    },
+    sms: { url: `${zipBase}?mode=sms_only`, name: `bills_${month}_sms.zip` },
+  };
+  [zipAll, zipMail, zipSms].forEach(node => {
+    if (!node) return;
+    node.disabled = false;
+    node.classList.remove("is-disabled");
+  });
+}
+
+async function runPackDownload(kind) {
+  const pack = packDownloads[kind];
+  if (!pack) return;
+  const msg = el("mailMsg");
+  msg.textContent = "Preparing download…";
+  msg.className = "msg";
+  try {
+    await downloadFile(pack.url, pack.name);
+    msg.textContent = "Download started.";
+    msg.className = "msg ok";
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = "msg err";
+  }
 }
 
 function clearBillList() {
@@ -1837,6 +1865,10 @@ window.onJobDone = (p) => {
   }
   if (earlierDone) earlierDone(p);
 };
+
+el("btnZipAll").onclick = () => runPackDownload("all");
+el("btnZipMail").onclick = () => runPackDownload("mail");
+el("btnZipSms").onclick = () => runPackDownload("sms");
 
 loadMonths().catch(e => { el("genMsg").textContent = e.message; });
 </script>

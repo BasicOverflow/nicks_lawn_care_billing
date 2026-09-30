@@ -11,6 +11,23 @@ async function api(path, opts = {}) {
   return r;
 }
 
+async function downloadFile(url, filename) {
+  const r = await fetch(url);
+  if (!r.ok) {
+    let detail = r.statusText;
+    try { detail = (await r.json()).detail || detail; } catch (_) {}
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  const blob = await r.blob();
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(link.href);
+}
+
 function el(id) { return document.getElementById(id); }
 
 let modelCheck = null;

@@ -333,6 +333,58 @@ def test_near_spelling_suggests_the_roster_client():
     assert open_conflicts(other, roster, [])[0]["suggestion"] is None
 
 
+def test_merge_mail_bills_pdf_combines_pages():
+    import io
+
+    from pypdf import PdfReader
+
+    from app.billing import build_pdf_bytes, merge_bills_pdf
+
+    lines = [{"description": "Mowing 8", "amount": 40, "day_or_note": "8"}]
+    one = build_pdf_bytes(
+        company="Test Co",
+        client_name="Alpha",
+        address="",
+        month="2026-09",
+        lines=lines,
+    )
+    two = build_pdf_bytes(
+        company="Test Co",
+        client_name="Beta",
+        address="",
+        month="2026-09",
+        lines=lines,
+    )
+
+    class FakeStorage:
+        def __init__(self, blobs):
+            self.blobs = blobs
+
+        def get_bytes(self, key):
+            return self.blobs[key]
+
+    blobs = {"a.pdf": one, "b.pdf": two}
+    bills = [
+        {"client_name": "Alpha", "s3_key": "a.pdf", "delivery": "mail", "prefer_mail": True},
+        {"client_name": "Beta", "s3_key": "b.pdf", "delivery": "mail", "prefer_mail": True},
+    ]
+
+    import app.billing as billing_mod
+
+    old_storage = billing_mod.storage
+    billing_mod.storage = FakeStorage(blobs)
+    try:
+        old_filter = billing_mod._bills_for_download
+        billing_mod._bills_for_download = lambda _conn, _month, mode="all": bills
+        merged = merge_bills_pdf(None, "2026-09", mode="mailing_only")
+    finally:
+        billing_mod._bills_for_download = old_filter
+        billing_mod.storage = old_storage
+
+    reader = PdfReader(io.BytesIO(merged))
+    assert len(reader.pages) == 2
+
+
 def test_reprice_visits_keeps_a_hand_edited_mow_amount():
     from app.billing import _reprice_visits
 
