@@ -141,7 +141,7 @@ class ManualWork(BaseModel):
 
     client_id: int = Field(..., description="Client id from GET /api/clients.")
     month: str = Field(..., description="Billing month, YYYY-MM.")
-    text: str = Field(..., description="Days and jobs, such as 9 16 or bush trimming 50.")
+    text: str = Field(..., description="Days and jobs, such as 9 16 or 5 bush trimming 50.")
 
 
 class ClientEmail(BaseModel):
