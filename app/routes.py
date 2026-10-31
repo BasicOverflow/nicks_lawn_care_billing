@@ -195,19 +195,17 @@ async def upload(
         try:
             import ocr
 
-            if not ocr.model_status().get("up"):
-                jobs.set_progress(percent=5, message="Loading the model…")
-                ocr.load_model()
+            jobs.set_progress(percent=5, message="Making sure the model is ready…")
+            ocr.ensure_model()
             jobs.set_progress(
                 percent=10,
-                message=f"Reading {n} photo{'s' if n != 1 else ''} at the same time…",
+                message=f"Reading {n} photo{'s' if n != 1 else ''}…",
             )
             with db.connect() as conn:
                 knowledge_records = db.knowledge_records_for_sheet(conn, item.sheet_kind)
             merged = {"title": None, "tables": [], "notes": [], "complete": False}
-            seqs = int((ocr.MODEL_CFG.get("vllm_kwargs") or {}).get("max_num_seqs") or 4)
-            slots = max(1, min(n, seqs))
-            per_photo = max(1, seqs // slots)
+            slots = 1
+            per_photo = 1
 
             def _one(index: int, path: Path):
                 raise_if_cancelled()

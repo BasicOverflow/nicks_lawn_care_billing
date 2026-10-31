@@ -169,6 +169,33 @@ def load_model() -> None:
     deploy_model(MODEL_ID, MODEL_CFG)
 
 
+def ensure_model() -> None:
+    """Load or reload until a short text ping succeeds."""
+    from .chat import chat_text
+
+    _ensure_env()
+    if model_status().get("up"):
+        try:
+            chat_text(
+                MODEL_ID,
+                "Reply with the single word ready.",
+                max_tokens=8,
+                guided_json=False,
+                timeout=45,
+            )
+            return
+        except Exception as e:
+            print(f"  model ping failed ({e}); reloading", flush=True)
+    load_model()
+    chat_text(
+        MODEL_ID,
+        "Reply with the single word ready.",
+        max_tokens=8,
+        guided_json=False,
+        timeout=45,
+    )
+
+
 def unload_model() -> None:
     from .deploy import shutdown_model
 
