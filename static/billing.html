@@ -106,7 +106,7 @@
   </section>
 </main>
 
-<script src="/static/js/app.js?v=16"></script>
+  <script src="/static/js/app.js?v=17"></script>
 <script>
 let currentJob = null;
 let currentExtract = null;
@@ -583,6 +583,11 @@ el("btnUpload").onclick = async () => {
   el("uploadMsg").className = "msg";
   el("btnUpload").disabled = true;
   try {
+    if (typeof ensureModel === "function") {
+      el("uploadMsg").textContent = "Making sure the model is ready…";
+      await ensureModel();
+      el("uploadMsg").textContent = `Submitting ${batch.length} photo${batch.length === 1 ? "" : "s"}…`;
+    }
     const r = await api("/api/upload", { method: "POST", body: fd });
     currentJob = r.job_id;
     window._ocrRunning = true;
@@ -628,10 +633,8 @@ window.onJobDone = (p) => {
 
 window.onJobError = (p) => {
   if (p.kind === "ocr" || p.status === "cancelled") {
-    if (p.status === "cancelled" || /cancel/i.test(p.message || "")) {
-      el("uploadMsg").textContent = p.message || "OCR cancelled.";
-      el("uploadMsg").className = "msg";
-    }
+    el("uploadMsg").textContent = p.message || (p.status === "cancelled" ? "OCR cancelled." : "OCR failed.");
+    el("uploadMsg").className = p.status === "error" ? "msg err" : "msg";
   }
   updateQueueMsg(p);
 };

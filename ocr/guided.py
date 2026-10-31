@@ -423,10 +423,12 @@ def _extract_work_sheet(
     header = detect_headers(model_id, cfg, page, sheet_kind, reuse_prepared=True)
     columns = header["columns"]
     print(f"  {prefix} work headers: {columns!r} title={header.get('title')!r}", flush=True)
+    last_err: Exception | None = None
     try:
         names = _sheet_names(model_id, cfg, page)
     except Exception as e:
         print(f"  {prefix} sheet names failed ({e})", flush=True)
+        last_err = e
         names = []
     print(f"  {prefix} names written on sheet: {len(names)}", flush=True)
     pool: list[list[str]] = []
@@ -452,6 +454,7 @@ def _extract_work_sheet(
                     raise
                 except Exception as e:
                     print(f"  {prefix} work chunk fail: {e}", flush=True)
+                    last_err = e
                     continue
                 pool.extend(_work_cells(got, columns))
         rows = _assemble_work_rows(names, pool, columns)
@@ -467,7 +470,10 @@ def _extract_work_sheet(
             rows = _collapse_work_rows(_work_cells(got, columns), columns)
         except Exception as e:
             print(f"  {prefix} work transcribe fail: {e}", flush=True)
+            last_err = e
             rows = []
+    if not rows and last_err is not None:
+        raise RuntimeError(f"The model could not read this photo: {last_err}") from last_err
     merged = {
         "title": header.get("title"),
         "tables": [{"caption": None, "columns": columns, "rows": rows}],

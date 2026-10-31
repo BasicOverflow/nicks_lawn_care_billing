@@ -39,6 +39,19 @@ from .schemas import (
 router = APIRouter(prefix="/api")
 
 
+def _extract_has_rows(extract) -> bool:
+    if isinstance(extract, str):
+        try:
+            extract = json.loads(extract)
+        except Exception:
+            return False
+    for table in (extract or {}).get("tables") or []:
+        for row in (table or {}).get("rows") or []:
+            if any(str(cell or "").strip() for cell in (row or [])):
+                return True
+    return False
+
+
 @router.get("/progress", tags=["status"], response_model=ProgressView)
 def progress():
     """Current background job, plus how many OCR batches are waiting.
@@ -182,6 +195,9 @@ async def upload(
         try:
             import ocr
 
+            if not ocr.model_status().get("up"):
+                jobs.set_progress(percent=5, message="Loading the model…")
+                ocr.load_model()
             jobs.set_progress(
                 percent=10,
                 message=f"Reading {n} photo{'s' if n != 1 else ''} at the same time…",
@@ -227,6 +243,8 @@ async def upload(
                 if part.get("title") and not merged.get("title"):
                     merged["title"] = part["title"]
             raise_if_cancelled()
+            if not _extract_has_rows(merged):
+                raise RuntimeError("The model did not find any rows on the sheet.")
             with db.connect() as conn:
                 db.save_upload_job(
                     conn, item.job_id, "done", "OCR complete",
@@ -353,15 +371,16 @@ def review_open():
     table on a computer.
     """
     with db.connect() as conn:
-        row = conn.execute(
+        candidates = conn.execute(
             """
             SELECT id, month, sheet_kind, updated_at, extract_json
             FROM upload_jobs
             WHERE status = 'done' AND extract_json IS NOT NULL
             ORDER BY updated_at DESC NULLS LAST, created_at DESC
-            LIMIT 1
+            LIMIT 12
             """
-        ).fetchone()
+        ).fetchall()
+        row = next((r for r in candidates if _extract_has_rows(r.get("extract_json"))), None)
         closed = None
         if not row:
             latest = conn.execute(

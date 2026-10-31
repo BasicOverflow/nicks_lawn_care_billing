@@ -108,7 +108,7 @@ def deploy_model(model_id: str, cfg: dict) -> None:
         "NINI_MAX_NUM_SEQS": str(int(vkw.get("max_num_seqs", 3))),
         "NINI_ALLOCATOR": "conserve",
         "NINI_MM_CACHE_GB": str(vkw.get("mm_processor_cache_gb", 0)),
-        "NINI_SLEEP_TIMEOUT": os.environ.get("NINI_SLEEP_TIMEOUT", "600"),
+        "NINI_SLEEP_TIMEOUT": os.environ.get("NINI_SLEEP_TIMEOUT", "-1"),
         "NINI_IDLE_TIMEOUT": os.environ.get("NINI_IDLE_TIMEOUT", "900"),
         "RAY_HIVE_NAMESPACE": "ray_hive",
         "PYTHONUNBUFFERED": "1",

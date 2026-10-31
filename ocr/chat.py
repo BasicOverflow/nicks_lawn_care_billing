@@ -40,10 +40,26 @@ def file_to_data_url(path: str | Path, mime: str | None = None) -> str:
 MAX_IMAGE_EDGE = int(os.environ.get("NINI_IMAGE_EDGE", "2000"))
 NOVEL_IMAGE_EDGE = int(os.environ.get("NINI_NOVEL_IMAGE_EDGE", "2800"))
 DEEPSEEK_MAX_IMAGE_EDGE = int(os.environ.get("NINI_DEEPSEEK_IMAGE_EDGE", "900"))
+MAX_VL_PIXELS = int(os.environ.get("NINI_MAX_PIXELS", "3211264"))
 
 
 def novel_mode() -> bool:
     return (os.environ.get("NINI_NOVEL") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _fit_image(img, max_edge: int, max_pixels: int):
+    """Shrink so the long edge and pixel count both stay under the VL limits."""
+    from PIL import Image
+
+    w, h = img.size
+    scale = 1.0
+    if max_edge > 0 and max(w, h) > max_edge:
+        scale = min(scale, max_edge / max(w, h))
+    if max_pixels > 0 and w * h > max_pixels:
+        scale = min(scale, (max_pixels / (w * h)) ** 0.5)
+    if scale < 1.0:
+        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
+    return img
 
 
 def prepare_image(
@@ -69,10 +85,7 @@ def prepare_image(
     img = ImageOps.exif_transpose(img).convert("RGB")
     # Shrink before deskew / contrast. Phone photos are large enough that
     # doing this on the full frame, four times at once, gets the app killed.
-    w, h = img.size
-    scale = max_edge / max(w, h)
-    if scale < 1.0:
-        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
+    img = _fit_image(img, max_edge, MAX_VL_PIXELS)
     if novel_mode():
         try:
             img = perspective_rectify(img)
@@ -85,10 +98,7 @@ def prepare_image(
             img = contrast_variant(img)
         except Exception:
             pass
-    w, h = img.size
-    scale = max_edge / max(w, h)
-    if scale < 1.0:
-        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
+    img = _fit_image(img, max_edge, MAX_VL_PIXELS)
     out = Path(tempfile.gettempdir()) / (
         f"nini_ocr_{os.getpid()}_{path.stem}_{os.urandom(4).hex()}.jpg"
     )

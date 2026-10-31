@@ -111,7 +111,8 @@ def main() -> None:
     kwargs = _vllm_kwargs(MODEL_ID, MODEL_NAME)
     alloc = _allocation_cls()
     print(f"deploy {MODEL_ID} ({MODEL_NAME}) allocator={alloc.__name__} kwargs={kwargs}")
-    sleep_timeout = int(os.environ.get("NINI_SLEEP_TIMEOUT", "600"))  # 10 min → sleep
+    # vLLM VL sleep/wake 500s on this model, so default is never sleep.
+    sleep_timeout = int(os.environ.get("NINI_SLEEP_TIMEOUT", "-1"))
     idle_timeout = int(os.environ.get("NINI_IDLE_TIMEOUT", "900"))  # 15 min → offload
     print(f"timeouts sleep={sleep_timeout}s idle={idle_timeout}s")
     status = hive.deploy_model(
