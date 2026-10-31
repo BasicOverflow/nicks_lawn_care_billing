@@ -67,6 +67,34 @@ def _allocation_cls():
     return RayPerformanceAllocator
 
 
+def _unstick_deploy_service() -> None:
+    """A stopped job can leave DeployService busy; later loads then wait forever."""
+    import time
+
+    import ray
+    from ray_hive.core.ray_utils.naming import ray_namespace
+
+    ns = ray_namespace()
+    try:
+        actor = ray.get_actor("deploy_service", namespace=ns)
+    except ValueError:
+        return
+    try:
+        busy = bool(ray.get(actor.is_busy.remote(), timeout=15))
+    except Exception as e:
+        print(f"deploy_service status failed ({e}); recreating", flush=True)
+        busy = True
+    if not busy:
+        return
+    print("killing stuck deploy_service", flush=True)
+    try:
+        ray.kill(actor)
+    except Exception as e:
+        print(f"kill deploy_service: {e}", flush=True)
+        return
+    time.sleep(1)
+
+
 def main() -> None:
     import ray
     from ray_hive import RayHive
@@ -79,6 +107,7 @@ def main() -> None:
         hive.shutdown(MODEL_ID)
     except Exception:
         pass
+    _unstick_deploy_service()
     kwargs = _vllm_kwargs(MODEL_ID, MODEL_NAME)
     alloc = _allocation_cls()
     print(f"deploy {MODEL_ID} ({MODEL_NAME}) allocator={alloc.__name__} kwargs={kwargs}")
