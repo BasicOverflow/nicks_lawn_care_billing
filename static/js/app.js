@@ -289,7 +289,10 @@ document.addEventListener("DOMContentLoaded", () => {
   refreshModel();
   setInterval(pollProgress, 1500);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") refreshModel();
+    if (document.visibilityState === "visible") {
+      refreshModel();
+      if (typeof window.syncWorkflowFromServer === "function") window.syncWorkflowFromServer();
+    }
   });
   const btn = el("btnLoadModel");
   if (btn) btn.addEventListener("click", loadModel);

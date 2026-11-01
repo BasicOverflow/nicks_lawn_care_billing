@@ -40,9 +40,10 @@
   <div class="col-resize left" role="separator" aria-orientation="vertical" aria-label="Resize clients"></div>
   <div class="col-resize right" role="separator" aria-orientation="vertical" aria-label="Resize clients"></div>
 </main>
-<script src="/static/js/app.js?v=18"></script>
+<script src="/static/js/app.js?v=19"></script>
 <script>
 let clientsLoaded = false;
+window._clientsDirty = false;
 function clientField(name, value, type) {
   const input = type === "notes" ? document.createElement("textarea") : document.createElement("input");
   input.className = type === "notes" ? "cell notes" : "cell";
@@ -215,6 +216,7 @@ el("btnSaveClients").onclick = async () => {
       body: JSON.stringify({clients: collectClients()}),
     });
     renderClients(r.clients || []);
+    window._clientsDirty = false;
     el("clientMsg").textContent = `Saved ${r.saved} client${r.saved === 1 ? "" : "s"}.`;
     el("clientMsg").className = "msg ok";
   } catch (e) {
@@ -224,7 +226,16 @@ el("btnSaveClients").onclick = async () => {
     el("btnSaveClients").disabled = false;
   }
 };
+el("clientWrap").addEventListener("input", () => { window._clientsDirty = true; });
+el("clientWrap").addEventListener("change", () => { window._clientsDirty = true; });
 loadClients();
+setInterval(() => {
+  if (document.visibilityState !== "visible" || window._clientsDirty) return;
+  loadClients();
+}, 5000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && !window._clientsDirty) loadClients();
+});
 
 (function () {
   const main = document.querySelector("main.clients-page");

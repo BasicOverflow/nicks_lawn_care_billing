@@ -106,9 +106,9 @@
   </section>
 </main>
 
-  <script src="/static/js/app.js?v=18"></script>
+  <script src="/static/js/app.js?v=19"></script>
 <script>
-let currentJob = null;
+var currentJob = null;
 let currentExtract = null;
 /** @type {{file: File, url: string}[]} */
 let stagedPhotos = [];
@@ -165,11 +165,11 @@ el("btnClearPhotos").onclick = () => {
   renderPhotoPreview();
 };
 
-let reviewStamp = null;
-let reviewCommitStamp = null;
-let reviewDirty = false;
-let reviewSaving = false;
-let reviewTimer = null;
+var reviewStamp = null;
+var reviewCommitStamp = null;
+var reviewDirty = false;
+var reviewSaving = false;
+var reviewTimer = null;
 
 function extractHasRows(extract) {
   const tables = (extract && extract.tables) || [];
@@ -262,9 +262,28 @@ function applySharedReview(r) {
   const reveal = !currentJob || r.job_id !== currentJob || el("reviewSection").hidden;
   currentJob = r.job_id;
   reviewStamp = r.updated_at;
-  if (r.month && /^\d{4}-\d{2}$/.test(r.month) && !el("month").value) el("month").value = r.month;
+  if (r.month && /^\d{4}-\d{2}$/.test(r.month)) el("month").value = r.month;
   refreshMonthSuggest();
   showReview(r.extract, reveal);
+}
+
+async function syncCurrentJobClosed() {
+  if (!currentJob || reviewDirty || reviewSaving || editingReview()) return;
+  try {
+    const j = await api("/api/jobs/" + currentJob);
+    if (j.status === "stored") {
+      reviewCommitStamp = j.updated_at || reviewCommitStamp;
+      reviewStamp = j.updated_at || reviewStamp;
+      dismissReview("Sheet sent to the datastore from another device.");
+      if (window.revealBills) window.revealBills();
+      else if (typeof loadMonths === "function") loadMonths();
+      return;
+    }
+    if (j.status === "cleared") {
+      dismissReview("Review cleared on another device.");
+    }
+  } catch (_) {
+  }
 }
 
 function cellInput(value) {
@@ -1107,12 +1126,6 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden" && reviewDirty) saveReviewDraft();
 });
 
-function pullSharedReview() {
-  api("/api/review/open").then(applySharedReview).catch(() => {});
-}
-pullSharedReview();
-setInterval(pullSharedReview, 2500);
-
 </script>
 <script>
 let lastBills = [];
@@ -1882,12 +1895,21 @@ const earlierDone = window.onJobDone;
 window.onJobDone = (p) => {
   if (p.kind === "generate") {
     const month = (p.detail && p.detail.month) || el("month").value;
-    if (!pendingGenerateJob || p.job_id !== pendingGenerateJob) return;
-    pendingGenerateJob = null;
+    const mine = pendingGenerateJob && p.job_id === pendingGenerateJob;
+    if (mine) pendingGenerateJob = null;
     if (month) generatedMonths.add(month);
-    el("genMsg").textContent = p.message;
-    el("genMsg").className = "msg ok";
-    if (el("month").value === month) refreshBills();
+    if (mine) {
+      el("genMsg").textContent = p.message;
+      el("genMsg").className = "msg ok";
+    } else if (month && el("month").value === month) {
+      el("genMsg").textContent = "PDFs updated (finished on another device).";
+      el("genMsg").className = "msg ok";
+    }
+    if (month && el("month").value === month) {
+      if (window.revealBills) window.revealBills();
+      else refreshBills();
+    }
+    if (typeof syncWorkflowFromServer === "function") syncWorkflowFromServer();
     return;
   }
   if (p.kind === "email") {
@@ -1902,6 +1924,51 @@ window.onJobDone = (p) => {
 el("btnZipAll").onclick = () => runPackDownload("all");
 el("btnZipMail").onclick = () => runPackDownload("mail");
 el("btnZipSms").onclick = () => runPackDownload("sms");
+
+let lastBillsRev = "";
+let lastClientsRev = "";
+let lastWorkRev = null;
+
+async function syncWorkflowFromServer() {
+  const month = el("month") && el("month").value ? el("month").value : "";
+  const path = month ? `/api/ui/sync?month=${encodeURIComponent(month)}` : "/api/ui/sync";
+  try {
+    const s = await api(path);
+    if (s.review && typeof applySharedReview === "function") applySharedReview(s.review);
+    if (typeof syncCurrentJobClosed === "function") await syncCurrentJobClosed();
+    if (s.months_with_work) {
+      monthsWithWork = s.months_with_work;
+      syncBillStep();
+    }
+    if (
+      s.workflow_month && /^\d{4}-\d{2}$/.test(s.workflow_month)
+      && s.review && s.review.job_id
+      && !reviewDirty && !editingReview()
+    ) {
+      el("month").value = s.workflow_month;
+      refreshMonthSuggest();
+    }
+    if (s.bills_rev != null && s.bills_rev !== lastBillsRev && month === el("month").value) {
+      lastBillsRev = s.bills_rev;
+      const step = el("stepBills");
+      if (step && !step.hidden) refreshBills();
+    } else if (s.bills_rev != null) {
+      lastBillsRev = s.bills_rev;
+    }
+    if (s.work_rev != null && s.work_rev !== lastWorkRev) {
+      lastWorkRev = s.work_rev;
+      loadMonths();
+    }
+    if (s.clients_rev && s.clients_rev !== lastClientsRev && typeof loadClients === "function") {
+      if (!window._clientsDirty) loadClients();
+    }
+    if (s.clients_rev) lastClientsRev = s.clients_rev;
+  } catch (_) {
+  }
+}
+window.syncWorkflowFromServer = syncWorkflowFromServer;
+syncWorkflowFromServer();
+setInterval(syncWorkflowFromServer, 2500);
 
 loadMonths().catch(e => { el("genMsg").textContent = e.message; });
 </script>

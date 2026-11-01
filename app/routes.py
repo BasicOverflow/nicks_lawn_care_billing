@@ -329,13 +329,41 @@ def get_job(
         row = db.get_upload_job(conn, job_id)
     if not row:
         raise HTTPException(404, "job not found")
+    stamp = row.get("updated_at")
     return {
         "id": row["id"],
         "status": row["status"],
         "progress_msg": row["progress_msg"],
         "month": row["month"],
         "extract": row["extract_json"],
+        "updated_at": stamp.isoformat() if hasattr(stamp, "isoformat") else stamp,
     }
+
+
+def _find_open_review(conn) -> tuple[dict | None, str | None]:
+    """Newest OCR table waiting for review, plus how the last job closed."""
+    candidates = conn.execute(
+        """
+        SELECT id, month, sheet_kind, updated_at, extract_json
+        FROM upload_jobs
+        WHERE status = 'done' AND extract_json IS NOT NULL
+        ORDER BY updated_at DESC NULLS LAST, created_at DESC
+        LIMIT 12
+        """
+    ).fetchall()
+    row = next((r for r in candidates if _extract_has_rows(r.get("extract_json"))), None)
+    closed = None
+    if not row:
+        latest = conn.execute(
+            """
+            SELECT status FROM upload_jobs
+            ORDER BY updated_at DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if latest and latest.get("status") in ("cleared", "stored"):
+            closed = latest["status"]
+    return row, closed
 
 
 def _review_payload(row: dict | None, closed_status: str | None = None) -> dict:
@@ -369,28 +397,61 @@ def review_open():
     table on a computer.
     """
     with db.connect() as conn:
-        candidates = conn.execute(
-            """
-            SELECT id, month, sheet_kind, updated_at, extract_json
-            FROM upload_jobs
-            WHERE status = 'done' AND extract_json IS NOT NULL
-            ORDER BY updated_at DESC NULLS LAST, created_at DESC
-            LIMIT 12
-            """
-        ).fetchall()
-        row = next((r for r in candidates if _extract_has_rows(r.get("extract_json"))), None)
-        closed = None
-        if not row:
+        row, closed = _find_open_review(conn)
+    return _review_payload(row, closed)
+
+
+@router.get("/ui/sync", tags=["status"])
+def ui_sync(month: str | None = None):
+    """Workflow snapshot for every browser: open review, months, bill/client revisions."""
+    month = (month or "").strip() or None
+    with db.connect() as conn:
+        row, closed = _find_open_review(conn)
+        review = _review_payload(row, closed)
+        workflow_month = review.get("month")
+        if not workflow_month:
             latest = conn.execute(
                 """
-                SELECT status FROM upload_jobs
+                SELECT month FROM upload_jobs
+                WHERE month IS NOT NULL AND month ~ '^[0-9]{4}-[0-9]{2}$'
                 ORDER BY updated_at DESC NULLS LAST, created_at DESC
                 LIMIT 1
                 """
             ).fetchone()
-            if latest and latest.get("status") in ("cleared", "stored"):
-                closed = latest["status"]
-    return _review_payload(row, closed)
+            if latest:
+                workflow_month = latest["month"]
+        clients_row = conn.execute(
+            "SELECT MAX(updated_at) AS t FROM clients",
+        ).fetchone()
+        clients_rev = clients_row["t"] if clients_row else None
+        bills_rev = None
+        work_rev = None
+        if month:
+            bill_row = conn.execute(
+                """
+                SELECT COUNT(*)::int AS n,
+                       COALESCE(MAX(id), 0) AS max_id,
+                       MAX(emailed_at) AS last_emailed
+                FROM bills WHERE month = %s
+                """,
+                (month,),
+            ).fetchone()
+            bills_rev = f"{bill_row['n']}:{bill_row['max_id']}:{bill_row['last_emailed']}"
+            work_row = conn.execute(
+                "SELECT COUNT(*)::int AS n FROM work_items WHERE month = %s",
+                (month,),
+            ).fetchone()
+            work_rev = int(work_row["n"]) if work_row else 0
+        months = db.months_with_work(conn)
+    stamp = clients_rev
+    return {
+        "review": review,
+        "workflow_month": workflow_month,
+        "months_with_work": months,
+        "clients_rev": stamp.isoformat() if hasattr(stamp, "isoformat") else stamp,
+        "bills_rev": bills_rev,
+        "work_rev": work_rev,
+    }
 
 
 @router.put("/jobs/{job_id}/draft", tags=["uploads"])
