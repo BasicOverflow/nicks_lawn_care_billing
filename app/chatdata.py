@@ -60,35 +60,10 @@ def knowledge_snapshot(conn, *, limit_work: int = 80, limit_clients: int = 120) 
     reply, which the chat showed as "No response from model."
     """
     clients = [row for row in db.list_clients(conn) if row.get("on_roster") is not False]
-    work = list(
-        conn.execute(
-            """
-            SELECT w.id, w.client_id, w.month, w.description, w.amount,
-                   c.name AS client_name
-            FROM work_items w
-            JOIN clients c ON c.id = w.client_id
-            ORDER BY w.month DESC, c.name, w.id
-            LIMIT %s
-            """,
-            (max(limit_work, 200),),
-        ).fetchall()
-    )
-    bills = list(
-        conn.execute(
-            """
-            SELECT b.id, b.month, b.client_id, c.name AS client_name,
-                   b.emailed_at IS NOT NULL AS emailed
-            FROM bills b JOIN clients c ON c.id = b.client_id
-            ORDER BY b.month DESC, c.name
-            LIMIT 80
-            """
-        ).fetchall()
-    )
-    month_counts: dict[str, int] = {}
-    for row in conn.execute(
-        "SELECT month, count(*) AS n FROM work_items GROUP BY month"
-    ).fetchall():
-        month_counts[str(row["month"])] = int(row["n"])
+    snap = db.chat_snapshot_rows(conn, work_limit=max(limit_work, 200), bill_limit=80)
+    work = snap["work"]
+    bills = snap["bills"]
+    month_counts = snap["month_counts"]
 
     def pack(n_clients: int, n_work: int, n_bills: int) -> str:
         payload = {
@@ -100,6 +75,9 @@ def knowledge_snapshot(conn, *, limit_work: int = 80, limit_clients: int = 120) 
                     "id": int(c["id"]),
                     "name": c["name"],
                     "email": c.get("email") or "",
+                    "phone": c.get("phone") or "",
+                    "prefer_mail": bool(c.get("prefer_mail")),
+                    "billing_notes": c.get("billing_notes") or "",
                     "mow_price": float(c["mow_price"]) if c.get("mow_price") is not None else None,
                     "hedge_price": float(c["hedge_price"]) if c.get("hedge_price") is not None else None,
                 }
@@ -302,37 +280,7 @@ def _status_month(question: str, *, today: date | None = None) -> str | None:
 
 
 def _month_inventory(conn, month: str) -> dict:
-    work_n = int(
-        conn.execute(
-            "SELECT count(*)::int AS n FROM work_items WHERE month = %s",
-            (month,),
-        ).fetchone()["n"]
-    )
-    bill_n = int(
-        conn.execute(
-            "SELECT count(*)::int AS n FROM bills WHERE month = %s",
-            (month,),
-        ).fetchone()["n"]
-    )
-    jobs = {
-        str(row["status"]): int(row["n"])
-        for row in conn.execute(
-            """
-            SELECT status, count(*)::int AS n
-            FROM upload_jobs
-            WHERE month = %s
-            GROUP BY status
-            """,
-            (month,),
-        ).fetchall()
-    }
-    test_n = int(
-        conn.execute(
-            "SELECT count(*)::int AS n FROM work_items WHERE month = %s",
-            ("test_month",),
-        ).fetchone()["n"]
-    )
-    return {"month": month, "work": work_n, "bills": bill_n, "jobs": jobs, "test_work": test_n}
+    return db.month_inventory(conn, month)
 
 
 def _inventory_reply(info: dict) -> str:

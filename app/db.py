@@ -889,3 +889,177 @@ def upsert_bill(conn, *, month: str, client_id: int, s3_key: str) -> int:
 
 def mark_bill_emailed(conn, bill_id: int) -> None:
     conn.execute("UPDATE bills SET emailed_at = NOW() WHERE id = %s", (bill_id,))
+
+
+def month_inventory(conn, month: str) -> dict:
+    """Counts chat uses for 'do I have November data?' without inventing totals."""
+    work_n = int(
+        conn.execute(
+            "SELECT count(*)::int AS n FROM work_items WHERE month = %s",
+            (month,),
+        ).fetchone()["n"]
+    )
+    bill_n = int(
+        conn.execute(
+            "SELECT count(*)::int AS n FROM bills WHERE month = %s",
+            (month,),
+        ).fetchone()["n"]
+    )
+    jobs = {
+        str(row["status"]): int(row["n"])
+        for row in conn.execute(
+            """
+            SELECT status, count(*)::int AS n
+            FROM upload_jobs
+            WHERE month = %s
+            GROUP BY status
+            """,
+            (month,),
+        ).fetchall()
+    }
+    test_n = int(
+        conn.execute(
+            "SELECT count(*)::int AS n FROM work_items WHERE month = %s",
+            ("test_month",),
+        ).fetchone()["n"]
+    )
+    return {"month": month, "work": work_n, "bills": bill_n, "jobs": jobs, "test_work": test_n}
+
+
+def chat_snapshot_rows(conn, *, work_limit: int = 200, bill_limit: int = 80) -> dict:
+    """Work, bills, and per-month counts for the data-chat snapshot."""
+    work = list(
+        conn.execute(
+            """
+            SELECT w.id, w.client_id, w.month, w.description, w.amount,
+                   c.name AS client_name
+            FROM work_items w
+            JOIN clients c ON c.id = w.client_id
+            ORDER BY w.month DESC, c.name, w.id
+            LIMIT %s
+            """,
+            (work_limit,),
+        ).fetchall()
+    )
+    bills = list(
+        conn.execute(
+            """
+            SELECT b.id, b.month, b.client_id, c.name AS client_name,
+                   b.emailed_at IS NOT NULL AS emailed
+            FROM bills b JOIN clients c ON c.id = b.client_id
+            ORDER BY b.month DESC, c.name
+            LIMIT %s
+            """,
+            (bill_limit,),
+        ).fetchall()
+    )
+    month_counts: dict[str, int] = {}
+    for row in conn.execute(
+        "SELECT month, count(*) AS n FROM work_items GROUP BY month"
+    ).fetchall():
+        month_counts[str(row["month"])] = int(row["n"])
+    return {"work": work, "bills": bills, "month_counts": month_counts}
+
+
+def list_editable_jobs(conn) -> list[dict]:
+    """Recent OCR jobs that still have a review table (unsent or already stored)."""
+    return list(
+        conn.execute(
+            """
+            SELECT id, month, sheet_kind, updated_at, extract_json, status
+            FROM upload_jobs
+            WHERE extract_json IS NOT NULL AND status IN ('done', 'stored')
+            ORDER BY updated_at DESC NULLS LAST, created_at DESC
+            LIMIT 24
+            """
+        ).fetchall()
+    )
+
+
+def latest_upload_status(conn, month: str | None = None) -> str | None:
+    if month:
+        latest = conn.execute(
+            """
+            SELECT status FROM upload_jobs
+            WHERE month = %s
+            ORDER BY updated_at DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            """,
+            (month,),
+        ).fetchone()
+    else:
+        latest = conn.execute(
+            """
+            SELECT status FROM upload_jobs
+            ORDER BY updated_at DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return latest["status"] if latest else None
+
+
+def latest_calendar_upload_month(conn) -> str | None:
+    latest = conn.execute(
+        """
+        SELECT month FROM upload_jobs
+        WHERE month IS NOT NULL AND month ~ '^[0-9]{4}-[0-9]{2}$'
+        ORDER BY updated_at DESC NULLS LAST, created_at DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return latest["month"] if latest else None
+
+
+def clients_updated_at(conn):
+    row = conn.execute("SELECT MAX(updated_at) AS t FROM clients").fetchone()
+    return row["t"] if row else None
+
+
+def month_bills_rev(conn, month: str) -> str:
+    row = conn.execute(
+        """
+        SELECT COUNT(*)::int AS n,
+               COALESCE(MAX(id), 0) AS max_id,
+               MAX(emailed_at) AS last_emailed
+        FROM bills WHERE month = %s
+        """,
+        (month,),
+    ).fetchone()
+    return f"{row['n']}:{row['max_id']}:{row['last_emailed']}"
+
+
+def month_work_count(conn, month: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*)::int AS n FROM work_items WHERE month = %s",
+        (month,),
+    ).fetchone()
+    return int(row["n"]) if row else 0
+
+
+def bill_for_client_month(conn, month: str, client_id: int) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT * FROM bills WHERE month = %s AND client_id = %s
+        ORDER BY id DESC LIMIT 1
+        """,
+        (month, client_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def client_has_work(conn, client_id: int) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM work_items WHERE client_id = %s LIMIT 1",
+        (client_id,),
+    ).fetchone()
+    return bool(row)
+
+
+def job_updated_at(conn, job_id: str):
+    row = conn.execute(
+        "SELECT updated_at FROM upload_jobs WHERE id = %s",
+        (job_id,),
+    ).fetchone()
+    if not row or row.get("updated_at") is None:
+        return None
+    return row["updated_at"]

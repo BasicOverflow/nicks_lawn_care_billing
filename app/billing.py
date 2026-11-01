@@ -633,11 +633,7 @@ def _retarget_month_clients(conn, month: str) -> None:
         current = db.get_client(conn, cid)
         if not current or client_is_set_up(current):
             continue
-        leftover = conn.execute(
-            "SELECT 1 FROM work_items WHERE client_id = %s LIMIT 1",
-            (cid,),
-        ).fetchone()
-        if not leftover:
+        if not db.client_has_work(conn, cid):
             db.delete_client(conn, cid)
 
 
@@ -686,13 +682,7 @@ def get_editable_bill(conn, month: str, client_id: int) -> dict | None:
     if not client:
         return None
     lines = db.work_for_client_month(conn, month, client_id)
-    bill = conn.execute(
-        """
-        SELECT * FROM bills WHERE month = %s AND client_id = %s
-        ORDER BY id DESC LIMIT 1
-        """,
-        (month, client_id),
-    ).fetchone()
+    bill = db.bill_for_client_month(conn, month, client_id)
     shown_name = client["name"]
     if bill and str(bill.get("display_name") or "").strip():
         shown_name = str(bill.get("display_name")).strip()
@@ -990,13 +980,7 @@ def apply_bill_face(
     client = db.get_client(conn, client_id)
     if not client:
         raise ValueError("Client was not found")
-    bill = conn.execute(
-        """
-        SELECT * FROM bills WHERE month = %s AND client_id = %s
-        ORDER BY id DESC LIMIT 1
-        """,
-        (month, client_id),
-    ).fetchone()
+    bill = db.bill_for_client_month(conn, month, client_id)
     if not bill:
         raise ValueError("There is no bill for this month yet")
     shown = " ".join(str(name or "").split())
@@ -1335,6 +1319,7 @@ def zip_bills(conn, month: str, *, mode: str = "all") -> bytes:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for b in bills:
             data = storage.get_bytes(b["s3_key"])
-            name = f"{b['client_name'].replace(' ', '_')}.pdf"
+            safe = str(b.get("client_name") or "client").replace(" ", "_")
+            name = f"{b.get('client_id', '')}_{safe}.pdf"
             zf.writestr(name, data)
     return buf.getvalue()

@@ -126,7 +126,11 @@ def extract_rows(extract: dict) -> list[dict]:
                 continue
             work = _cell(row, work_i) if work_i >= 0 else ""
             if not work:
-                work = _work_text_legacy(row, name_i, addr_i)
+                work = _work_text_legacy(
+                    {"cells": [str(c) for c in row], "address": _cell(row, addr_i) if addr_i >= 0 else ""},
+                    name_i,
+                    addr_i,
+                )
             out.append({
                 "name": name,
                 "address": _cell(row, addr_i) if addr_i >= 0 else "",

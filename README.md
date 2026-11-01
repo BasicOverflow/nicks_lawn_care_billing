@@ -47,6 +47,7 @@ py -3 -m pip install -r requirements.txt
 py -3 -m pip install -e C:\Users\Peter\Desktop\ray-hive
 
 py -3 scripts\ensure_infra.py   # create DB + schema + S3 bucket
+py -3 -m pytest                 # offline unit tests (no Postgres/OCR/SMTP)
 py -3 run.py                    # http://127.0.0.1:8787
 ```
 

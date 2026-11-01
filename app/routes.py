@@ -338,39 +338,14 @@ def _find_editable_review(conn, month: str | None = None) -> tuple[dict | None, 
     unsent job must not beat a newer stored sheet for the same month.
     """
     month = (month or "").strip() or None
-    candidates = conn.execute(
-        """
-        SELECT id, month, sheet_kind, updated_at, extract_json, status
-        FROM upload_jobs
-        WHERE extract_json IS NOT NULL AND status IN ('done', 'stored')
-        ORDER BY updated_at DESC NULLS LAST, created_at DESC
-        LIMIT 24
-        """
-    ).fetchall()
+    candidates = db.list_editable_jobs(conn)
     picked = knowledge.pick_editable_job([dict(r) for r in candidates], month)
     row = picked
     closed = None
     if not row:
-        if month:
-            latest = conn.execute(
-                """
-                SELECT status FROM upload_jobs
-                WHERE month = %s
-                ORDER BY updated_at DESC NULLS LAST, created_at DESC
-                LIMIT 1
-                """,
-                (month,),
-            ).fetchone()
-        else:
-            latest = conn.execute(
-                """
-                SELECT status FROM upload_jobs
-                ORDER BY updated_at DESC NULLS LAST, created_at DESC
-                LIMIT 1
-                """
-            ).fetchone()
-        if latest and latest.get("status") == "cleared":
-            closed = latest["status"]
+        latest = db.latest_upload_status(conn, month)
+        if latest == "cleared":
+            closed = latest
     return (dict(row) if row else None), closed
 
 
@@ -422,38 +397,13 @@ def ui_sync(month: str | None = None):
         review = _review_payload(row, closed)
         workflow_month = review.get("month")
         if not workflow_month:
-            latest = conn.execute(
-                """
-                SELECT month FROM upload_jobs
-                WHERE month IS NOT NULL AND month ~ '^[0-9]{4}-[0-9]{2}$'
-                ORDER BY updated_at DESC NULLS LAST, created_at DESC
-                LIMIT 1
-                """
-            ).fetchone()
-            if latest:
-                workflow_month = latest["month"]
-        clients_row = conn.execute(
-            "SELECT MAX(updated_at) AS t FROM clients",
-        ).fetchone()
-        clients_rev = clients_row["t"] if clients_row else None
+            workflow_month = db.latest_calendar_upload_month(conn)
+        clients_rev = db.clients_updated_at(conn)
         bills_rev = None
         work_rev = None
         if month:
-            bill_row = conn.execute(
-                """
-                SELECT COUNT(*)::int AS n,
-                       COALESCE(MAX(id), 0) AS max_id,
-                       MAX(emailed_at) AS last_emailed
-                FROM bills WHERE month = %s
-                """,
-                (month,),
-            ).fetchone()
-            bills_rev = f"{bill_row['n']}:{bill_row['max_id']}:{bill_row['last_emailed']}"
-            work_row = conn.execute(
-                "SELECT COUNT(*)::int AS n FROM work_items WHERE month = %s",
-                (month,),
-            ).fetchone()
-            work_rev = int(work_row["n"]) if work_row else 0
+            bills_rev = db.month_bills_rev(conn, month)
+            work_rev = db.month_work_count(conn, month)
         months = db.months_with_work(conn)
     stamp = clients_rev
     return {
@@ -548,12 +498,8 @@ async def commit_job(
                 conn, job_id, "stored", "Stored",
                 extract=extract, month=month,
             )
-            stamp = conn.execute(
-                "SELECT updated_at FROM upload_jobs WHERE id = %s",
-                (job_id,),
-            ).fetchone()
-            if stamp and stamp.get("updated_at") is not None:
-                ts = stamp["updated_at"]
+            ts = db.job_updated_at(conn, job_id)
+            if ts is not None:
                 result["updated_at"] = ts.isoformat() if hasattr(ts, "isoformat") else ts
     return result
 
