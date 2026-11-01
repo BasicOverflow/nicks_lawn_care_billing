@@ -31,11 +31,13 @@ async function downloadFile(url, filename) {
 function el(id) { return document.getElementById(id); }
 
 let modelCheck = null;
+let refreshPending = false;
 let modelDeploying = false;
 let modelReady = false;
 let modelLoadStarted = false;
 let modelLoadJob = "";
 let modelWaiters = [];
+const MODEL_ID = "qwen25-vl-3b";
 
 function settleModelWaiters(err) {
   const waiting = modelWaiters;
@@ -59,7 +61,7 @@ function paintModel(up, label) {
       btn.classList.add("is-loaded");
     } else if (modelDeploying) {
       btn.disabled = true;
-      btn.textContent = "Load model";
+      btn.textContent = "Loading model…";
       btn.classList.remove("is-loaded");
     } else {
       btn.disabled = false;
@@ -75,21 +77,64 @@ function paintModel(up, label) {
   }
 }
 
+function paintModelLoading(message) {
+  modelDeploying = true;
+  modelReady = false;
+  const text = message || "Loading model…";
+  paintModel(false, text.startsWith("Model") ? text : `Model: ${text}`);
+}
+
+function syncModelFromProgress(jobs) {
+  const modelJob = jobs.find(job => job.kind === "model");
+  if (!modelJob) return false;
+  if (modelJob.status === "running") {
+    paintModelLoading(modelJob.message || "loading…");
+    return true;
+  }
+  if (modelJob.status === "done") {
+    const detail = modelJob.detail || {};
+    const id = detail.id || MODEL_ID;
+    if (detail.up) {
+      paintModel(true, `Model ${id}: ready`);
+    } else {
+      paintModel(false, `Model ${id}: offline`);
+    }
+    modelDeploying = false;
+    modelLoadStarted = false;
+    modelLoadJob = "";
+    return true;
+  }
+  if (modelJob.status === "error" || modelJob.status === "cancelled") {
+    paintModel(false, `Model ${MODEL_ID}: offline`);
+    modelDeploying = false;
+    return true;
+  }
+  return false;
+}
+
 async function refreshModel() {
-  if (modelCheck) return;
+  if (modelCheck) {
+    refreshPending = true;
+    return;
+  }
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 4000);
-  modelCheck = fetch("/api/model/status", { signal: ctrl.signal });
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  modelCheck = fetch("/api/model/status", { signal: ctrl.signal, cache: "no-store" });
   try {
     const r = await modelCheck;
     if (!r.ok) throw new Error("status");
     const s = await r.json();
+    if (modelDeploying) return;
     paintModel(!!s.up, s.up ? `Model ${s.id}: ready` : `Model ${s.id}: offline`);
   } catch (_) {
-    paintModel(false, "Model: unreachable");
+    if (!modelDeploying) paintModel(false, "Model: unreachable");
   } finally {
     clearTimeout(timer);
     modelCheck = null;
+    if (refreshPending) {
+      refreshPending = false;
+      refreshModel();
+    }
   }
 }
 
@@ -97,7 +142,7 @@ async function loadModel() {
   if (modelReady || modelLoadStarted) return;
   modelLoadStarted = true;
   modelDeploying = true;
-  paintModel(false, el("modelStatus") ? el("modelStatus").textContent : "Model: …");
+  paintModelLoading("loading…");
   try {
     const started = await api("/api/model/load", { method: "POST" });
     modelLoadJob = started.job_id || "";
@@ -195,6 +240,7 @@ async function pollProgress() {
   try {
     const p = await api("/api/progress");
     const jobs = setProgressUI(p);
+    const modelSynced = syncModelFromProgress(jobs);
     jobs.forEach(job => {
       const tagged = withQueue(job, p);
       if (job.status === "done" && window.claimJobDone(job) && typeof window.onJobDone === "function") {
@@ -217,10 +263,15 @@ async function pollProgress() {
       modelLoadJob = "";
       modelDeploying = false;
       settleModelWaiters(new Error(modelJobFailed.message || "Model failed to load"));
-    } else if (!modelReady) {
+    } else if (!modelReady && !modelSynced) {
       modelDeploying = modelLoadStarted || modelJobRunning;
     }
-    if (ocrLive) window._sawOcr = true;
+    if (ocrLive) {
+      window._sawOcr = true;
+      if (jobs.some(job => job.kind === "ocr" && (job.message || "").toLowerCase().includes("model"))) {
+        paintModelLoading("preparing for OCR…");
+      }
+    }
     if (jobs.some(job => job.kind === "ocr" && job.status !== "running")) window._sawOcr = false;
     else if (window._sawOcr && !ocrLive) {
       const um = el("uploadMsg");
@@ -237,6 +288,9 @@ async function pollProgress() {
 document.addEventListener("DOMContentLoaded", () => {
   refreshModel();
   setInterval(pollProgress, 1500);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refreshModel();
+  });
   const btn = el("btnLoadModel");
   if (btn) btn.addEventListener("click", loadModel);
   const chat = document.querySelector(".chat-card");

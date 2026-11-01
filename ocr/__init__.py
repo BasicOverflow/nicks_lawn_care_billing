@@ -144,20 +144,51 @@ def apply_correction(
     return table_json
 
 
-def model_status() -> dict:
-    """Return {id, up, base_url}."""
+_LIVE_CACHE: dict[str, float | bool] = {"ts": 0.0, "up": False}
+
+
+def model_status(*, live: bool = True) -> dict:
+    """Return {id, up, base_url}. ``up`` needs a short chat ping, not just /v1/models."""
     _ensure_env()
+    import time
     import urllib.request
 
     from .chat import serve_base
 
     base = serve_base()
-    up = False
+    route_up = False
     try:
         with urllib.request.urlopen(f"{base}/{MODEL_ID}/v1/models", timeout=5) as r:
-            up = r.status == 200
+            route_up = r.status == 200
     except Exception:
-        up = False
+        route_up = False
+    if not route_up:
+        _LIVE_CACHE["ts"] = 0.0
+        _LIVE_CACHE["up"] = False
+        return {"id": MODEL_ID, "up": False, "base_url": f"{base}/{MODEL_ID}"}
+    if not live:
+        return {"id": MODEL_ID, "up": True, "base_url": f"{base}/{MODEL_ID}"}
+
+    now = time.time()
+    cached = float(_LIVE_CACHE.get("ts") or 0)
+    if now - cached < 8 and "up" in _LIVE_CACHE:
+        up = bool(_LIVE_CACHE["up"])
+    else:
+        from .chat import chat_text
+
+        try:
+            chat_text(
+                MODEL_ID,
+                "Reply with the single word ready.",
+                max_tokens=8,
+                guided_json=False,
+                timeout=20,
+            )
+            up = True
+        except Exception:
+            up = False
+        _LIVE_CACHE["ts"] = now
+        _LIVE_CACHE["up"] = up
     return {"id": MODEL_ID, "up": up, "base_url": f"{base}/{MODEL_ID}"}
 
 

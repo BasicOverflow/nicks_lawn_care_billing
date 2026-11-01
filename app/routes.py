@@ -69,8 +69,8 @@ def progress():
 def model_status():
     """Whether Qwen2.5-VL-3B is answering on ray-hive.
 
-    `id` is always `qwen25-vl-3b`. `up` is true when that Serve route returns
-    a model list. `base_url` is the OpenAI-style chat endpoint for that model.
+    `id` is always `qwen25-vl-3b`. `up` is true when the route answers a short
+    chat ping (not just `/v1/models`). `base_url` is the OpenAI-style endpoint.
     """
     import ocr
 

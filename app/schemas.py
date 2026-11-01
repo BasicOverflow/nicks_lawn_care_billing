@@ -256,7 +256,7 @@ class ModelStatus(BaseModel):
     """Whether the vision model route is up on ray-hive."""
 
     id: str = Field("qwen25-vl-3b", description="ray-hive model id. Always Qwen2.5-VL-3B.")
-    up: bool = Field(..., description="True when GET {base_url}/v1/models succeeds.")
+    up: bool = Field(..., description="True when the model answers a short chat ping.")
     base_url: str = Field("", description="OpenAI-compatible base for that model.")
 
 
