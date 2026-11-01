@@ -94,7 +94,7 @@ def model_load():
             import ocr
 
             jobs.set_progress(percent=20, message="Submitting deploy job…")
-            ocr.load_model()
+            ocr.ensure_model()
             jobs.done("Model ready", detail=ocr.model_status())
         except Exception as e:
             jobs.fail(str(e))

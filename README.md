@@ -97,7 +97,21 @@ From the Gitea mirror of [BasicOverflow/nicks_lawn_care_billing](https://github.
 bash -c "$(curl -fsSL http://10.0.0.52:3000/admin/nicks_lawn_care_billing/raw/branch/main/deploy/install.sh)"
 ```
 
-The guest keeps `/etc/nicks-billing.env`. Sheet photos, gold labels, and `.env` are not copied in. OCR still uses ray-hive on the cluster; the CT only submits jobs. It clones `ray-hive` to `/opt/ray-hive` as that working directory and does not install vLLM.
+The guest keeps `/etc/nicks-billing.env`. Sheet photos, gold labels, and `.env` are not copied in. OCR runs on **ray-hive** GPU workers; the CT only submits Ray Jobs. Deploy/shutdown jobs upload the small `ocr/` tree only (never `/opt/ray-hive` — a second copy breaks `gpu_registry` / `DeployService` on the cluster).
+
+### ray-hive compatibility (0.2.x)
+
+Target cluster package: **ray-hive 0.2.1** on images `ray-vllm-worker:2.56.0-vllm028-ocr2-0.2.1` (and `ray-cpu-hive` for CPU paths). Job runtime env pip-installs `RAY_HIVE_PIP` (default `ray-hive==0.2.1`) from Gitea PyPI so deploy scripts match baked workers during image rollouts.
+
+| Concern | App behavior |
+|---------|----------------|
+| `DeployService` / `HIVE_DEPLOY_CODE_REV` | Jobs call `get_deploy_service()` before deploy; stuck `is_busy` actors are cleared |
+| `gpu_registry.has_deployment(id)` | One-arg API; do not ship an old `ray_hive` tree in the job `working_dir` |
+| Sleep / idle | Defaults `NINI_SLEEP_TIMEOUT=-1`, `NINI_IDLE_TIMEOUT=-1` (VL sleep/wake 500s) |
+| Supervisor sticky revive | Billing deploys do not pin supervisor state; only explicit **Load model** / OCR `ensure_model()` |
+| Readiness | `/api/model/status` and post-deploy wait use a short chat ping, not `/v1/models` alone |
+
+Optional on the CT: clone [ray-hive](https://github.com/BasicOverflow/ray-hive) to `/opt/ray-hive` for editable local imports; vLLM is not installed in the billing guest.
 
 ```bash
 pct exec 118 -- systemctl status nicks-billing

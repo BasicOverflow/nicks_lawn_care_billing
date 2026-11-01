@@ -7,6 +7,7 @@ APP_USER="${APP_USER:-billing}"
 ENV_FILE="${ENV_FILE:-/etc/nicks-billing.env}"
 RAY_HIVE_ROOT="${RAY_HIVE_ROOT:-/opt/ray-hive}"
 RAY_HIVE_CLONE_URL="${RAY_HIVE_CLONE_URL:-https://github.com/BasicOverflow/ray-hive.git}"
+RAY_HIVE_GIT_REF="${RAY_HIVE_GIT_REF:-main}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 
 export DEBIAN_FRONTEND=noninteractive
@@ -37,7 +38,8 @@ ln -sfn "$ENV_FILE" "$APP_ROOT/.env"
 if [[ ! -d "$RAY_HIVE_ROOT/.git" && ! -f "$RAY_HIVE_ROOT/pyproject.toml" ]]; then
   echo "bootstrap: cloning ray-hive (job working_dir, not the GPU runtime)"
   rm -rf "$RAY_HIVE_ROOT"
-  git clone --depth 1 "$RAY_HIVE_CLONE_URL" "$RAY_HIVE_ROOT"
+  git clone --depth 1 --branch "$RAY_HIVE_GIT_REF" "$RAY_HIVE_CLONE_URL" "$RAY_HIVE_ROOT" \
+    || git clone --depth 1 "$RAY_HIVE_CLONE_URL" "$RAY_HIVE_ROOT"
 fi
 
 export PATH="/root/.local/bin:/usr/local/bin:${PATH}"

@@ -10,16 +10,11 @@ from pathlib import Path
 JOB_DIR = Path(__file__).resolve().parent
 DASHBOARD = os.environ.get("RAY_DASHBOARD", "http://10.0.1.52:8265")
 SERVE = os.environ.get("RAY_SERVE", "http://10.0.1.52:8000")
-
-
-def _model_up(model_id: str) -> bool:
-    import urllib.request
-
-    try:
-        with urllib.request.urlopen(f"{SERVE}/{model_id}/v1/models", timeout=8) as r:
-            return r.status == 200
-    except Exception:
-        return False
+HIVE_PIP = os.environ.get("RAY_HIVE_PIP", "ray-hive==0.2.1")
+HIVE_PIP_INDEX = os.environ.get(
+    "HIVE_PIP_EXTRA_INDEX",
+    "http://10.0.0.52:3000/api/packages/admin/pypi/simple/",
+)
 
 
 def _client():
@@ -34,12 +29,17 @@ def _client():
 
 
 def _runtime(env: dict) -> dict:
-    # Only the job scripts. Uploading /opt/ray-hive ships a second ray_hive
-    # package that does not match the cluster gpu_registry actor.
+    # Only the ocr/ job scripts — never upload /opt/ray-hive (stale gpu_registry API).
+    # Pip ray-hive on the job worker matches cluster 0.2.x images (see ray_hive/cluster/actor_env.py).
+    merged = dict(env)
+    merged.setdefault("PIP_EXTRA_INDEX_URL", HIVE_PIP_INDEX)
+    merged.setdefault("PIP_INDEX_URL", "https://pypi.org/simple")
+    merged.setdefault("RAY_HIVE_NAMESPACE", "ray_hive")
     return {
         "working_dir": str(JOB_DIR),
         "excludes": ["__pycache__", "*.pyc"],
-        "env_vars": env,
+        "pip": [HIVE_PIP],
+        "env_vars": merged,
     }
 
 
@@ -122,12 +122,14 @@ def deploy_model(model_id: str, cfg: dict) -> None:
     st = _wait(client, jid, "deploy", 720)
     if st != "SUCCEEDED":
         _fail(client, jid, st)
-    for _ in range(30):
-        if _model_up(model_id):
+    from . import model_status
+
+    for _ in range(40):
+        if model_status().get("up"):
             print(f"model ready: {SERVE}/{model_id}", flush=True)
             return
-        time.sleep(2)
-    raise RuntimeError("deploy succeeded but /v1/models never came up")
+        time.sleep(3)
+    raise RuntimeError("deploy succeeded but the model did not answer a readiness ping")
 
 
 def shutdown_model(model_id: str) -> None:
