@@ -594,3 +594,20 @@ def test_chat_wipe_month_natural_phrases():
     assert _wipe_month("what happened in november", today=today) is None
     assert _wipe_month("delete november work", today=today) == "2026-11"
 
+
+def test_chat_status_month_skips_deletes_and_reads_november():
+    from datetime import date
+
+    from app.chatdata import _inventory_reply, _status_month
+
+    today = date(2026, 11, 1)
+    assert _status_month("do i have november data that isnt tests", today=today) == "2026-11"
+    assert _status_month("how many october bills", today=today) == "2026-10"
+    assert _status_month("delete november", today=today) is None
+    reply = _inventory_reply(
+        {"month": "2026-11", "work": 0, "bills": 0, "jobs": {"done": 1}, "test_work": 5}
+    )
+    assert "0 stored work" in reply
+    assert "test_month" in reply
+    assert "1 OCR" in reply
+

@@ -286,6 +286,79 @@ def _clear_month(conn, month: str) -> dict:
     return cleared
 
 
+def _status_month(question: str, *, today: date | None = None) -> str | None:
+    """YYYY-MM when the user asked whether a month has stored data."""
+    text = (question or "").strip().lower()
+    if re.search(r"\b(delete|remove|wipe|clear|erase|drop)\b", text):
+        return None
+    if not re.search(
+        r"\b(have|has|any|how many|count|what's in|whats in|what is in|"
+        r"left|stored|data|work|bills?|pdfs?|still)\b",
+        text,
+    ):
+        return None
+    today = today or date.today()
+    return _month_from_chat_text(text, today=today)
+
+
+def _month_inventory(conn, month: str) -> dict:
+    work_n = int(
+        conn.execute(
+            "SELECT count(*)::int AS n FROM work_items WHERE month = %s",
+            (month,),
+        ).fetchone()["n"]
+    )
+    bill_n = int(
+        conn.execute(
+            "SELECT count(*)::int AS n FROM bills WHERE month = %s",
+            (month,),
+        ).fetchone()["n"]
+    )
+    jobs = {
+        str(row["status"]): int(row["n"])
+        for row in conn.execute(
+            """
+            SELECT status, count(*)::int AS n
+            FROM upload_jobs
+            WHERE month = %s
+            GROUP BY status
+            """,
+            (month,),
+        ).fetchall()
+    }
+    test_n = int(
+        conn.execute(
+            "SELECT count(*)::int AS n FROM work_items WHERE month = %s",
+            ("test_month",),
+        ).fetchone()["n"]
+    )
+    return {"month": month, "work": work_n, "bills": bill_n, "jobs": jobs, "test_work": test_n}
+
+
+def _inventory_reply(info: dict) -> str:
+    month = info["month"]
+    work_n = info["work"]
+    bill_n = info["bills"]
+    bits = [
+        f"{month} has {work_n} stored work line{'' if work_n == 1 else 's'}"
+        f" and {bill_n} generated bill{'' if bill_n == 1 else 's'}."
+    ]
+    if work_n == 0 and bill_n == 0:
+        bits.append("That is not the test data.")
+        test_n = info["test_work"]
+        bits.append(
+            f"test_month (test data) has {test_n} work line{'' if test_n == 1 else 's'}."
+        )
+    open_n = int(info["jobs"].get("done") or 0) + int(info["jobs"].get("stored") or 0)
+    if open_n:
+        bits.append(
+            f"There {'is' if open_n == 1 else 'are'} also {open_n} OCR sheet"
+            f"{'' if open_n == 1 else 's'} for {month} still on the review/upload list "
+            "(not the same as sent work)."
+        )
+    return " ".join(bits)
+
+
 def _wipe_month(question: str, *, today: date | None = None) -> str | None:
     """YYYY-MM when the user asked to delete a whole month of work. Otherwise None.
 
@@ -315,6 +388,15 @@ def _wipe_month(question: str, *, today: date | None = None) -> str | None:
 
 def answer(conn, question: str, history: list[dict[str, str]] | None = None) -> dict:
     """Chat: answer and optionally mutate datastore. Returns {answer, mutations_applied}."""
+    asked = _status_month(question)
+    if asked:
+        info = _month_inventory(conn, asked)
+        return {
+            "answer": _inventory_reply(info),
+            "mutations_applied": [],
+            "mutations": [],
+        }
+
     direct = _wipe_month(question)
     if direct:
         cleared = _clear_month(conn, direct)
