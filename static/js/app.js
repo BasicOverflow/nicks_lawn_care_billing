@@ -1,5 +1,16 @@
 /* Shared header: model status + global progress */
 async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  const body = opts.body;
+  if (
+    body != null
+    && typeof body === "string"
+    && !headers["Content-Type"]
+    && !headers["content-type"]
+  ) {
+    headers["Content-Type"] = "application/json";
+    opts = { ...opts, headers };
+  }
   const r = await fetch(path, opts);
   if (!r.ok) {
     let detail = r.statusText;

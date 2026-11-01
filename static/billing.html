@@ -108,7 +108,7 @@
   </section>
 </main>
 
-  <script src="/static/js/app.js?v=20"></script>
+  <script src="/static/js/app.js?v=21"></script>
 <script>
 var currentJob = null;
 let currentExtract = null;
@@ -1960,10 +1960,10 @@ el("btnClearBills").onclick = async () => {
   msg.textContent = "Clearing…";
   msg.className = "msg";
   try {
-    const r = await api(`/api/billing/${encodeURIComponent(month)}/clear`, {
-      method: "POST",
-      body: JSON.stringify({ include_work: includeWork }),
-    });
+    const r = await api(
+      `/api/billing/${encodeURIComponent(month)}/clear?include_work=${includeWork ? "true" : "false"}`,
+      { method: "POST" },
+    );
     clearBillList();
     el("mailMsg").textContent = "";
     el("viewerCard").hidden = true;

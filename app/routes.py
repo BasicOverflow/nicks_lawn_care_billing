@@ -27,7 +27,6 @@ from .schemas import (
     ClientEmail,
     ClientRoster,
     BillFace,
-    ClearMonthBilling,
     ManualWork,
     ReviewDraft,
     ModelStatus,
@@ -992,11 +991,14 @@ def billing_delete(
 @router.post("/billing/{month}/clear", tags=["billing"])
 def billing_clear_month(
     month: str = ApiPath(..., description="Billing month, YYYY-MM."),
-    body: ClearMonthBilling = ClearMonthBilling(),
+    include_work: bool = Query(
+        False,
+        description="When true, also delete stored work for the month.",
+    ),
 ):
     """Clear Step 3 for a month: generated PDFs (default), optionally stored work too."""
     with db.connect() as conn:
-        if body.include_work:
+        if include_work:
             stats = db.delete_month_work(conn, month)
             keys = stats.pop("s3_keys", [])
         else:
@@ -1004,7 +1006,7 @@ def billing_clear_month(
             stats = {"month": month.strip(), "work_items": 0, "bills": len(keys)}
     for key in keys:
         storage.delete_key(key)
-    return {"ok": True, "include_work": body.include_work, **stats}
+    return {"ok": True, "include_work": include_work, **stats}
 
 
 @router.post("/billing/{month}/sms-email", tags=["billing"], response_model=AcceptedJob)
