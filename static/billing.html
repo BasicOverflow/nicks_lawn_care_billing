@@ -82,6 +82,7 @@
       <button type="button" id="btnGenerate">Generate PDFs</button>
       <button type="button" id="btnRefresh" class="secondary">Refresh list</button>
       <button type="button" id="btnEditWork" class="secondary">Edit uploaded work</button>
+      <button type="button" id="btnClearBills" class="secondary">Clear Step 3</button>
     </div>
     <p class="msg" id="genMsg"></p>
     <div class="row-actions">
@@ -1938,6 +1939,51 @@ el("btnEditWork").onclick = async () => {
   reviewPinnedHidden = false;
   if (typeof syncWorkflowFromServer === "function") {
     await syncWorkflowFromServer({ forceReview: true, scrollReview: true });
+  }
+};
+el("btnClearBills").onclick = async () => {
+  const month = el("month").value;
+  if (!month) return;
+  const label = monthLabel(month);
+  if (
+    !window.confirm(
+      `Clear Step 3 for ${label}?\n\nThis removes generated PDFs and the bill list. Stored work from Step 2 stays unless you choose to remove it next.`,
+    )
+  ) {
+    return;
+  }
+  const includeWork = window.confirm(
+    `Also remove stored work for ${label} from the datastore?\n\nOK = remove work and PDFs. Cancel = PDFs only.`,
+  );
+  const msg = el("genMsg");
+  msg.textContent = "Clearing…";
+  msg.className = "msg";
+  try {
+    const r = await api(`/api/billing/${encodeURIComponent(month)}/clear`, {
+      method: "POST",
+      body: JSON.stringify({ include_work: includeWork }),
+    });
+    clearBillList();
+    el("mailMsg").textContent = "";
+    el("viewerCard").hidden = true;
+    if (includeWork) {
+      monthsWithWork = monthsWithWork.filter((m) => m !== month);
+      window.monthsWithWork = monthsWithWork;
+      syncBillStep();
+      await loadMonths();
+      msg.textContent = `Cleared ${r.bills || 0} bill(s) and ${r.work_items || 0} work row(s) for ${label}.`;
+    } else {
+      msg.textContent =
+        r.bills > 0
+          ? `Removed ${r.bills} bill(s) for ${label}. Generate again when ready.`
+          : `No bills were stored for ${label}.`;
+      await refreshBills();
+    }
+    msg.className = "msg ok";
+    if (typeof syncWorkflowFromServer === "function") syncWorkflowFromServer();
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = "msg err";
   }
 };
 el("month").addEventListener("change", () => {

@@ -800,18 +800,30 @@ def set_client_email(conn, client_id: int, email: str | None) -> None:
     )
 
 
+def delete_month_bills(conn, month: str) -> list[str]:
+    """Remove generated bills for one YYYY-MM. Work items stay. Returns PDF keys."""
+    month = (month or "").strip()
+    rows = conn.execute(
+        "DELETE FROM bills WHERE month = %s RETURNING s3_key",
+        (month,),
+    ).fetchall()
+    return [row["s3_key"] for row in rows if row.get("s3_key")]
+
+
 def delete_month_work(conn, month: str) -> dict:
     """Remove stored work and generated bills for one YYYY-MM. Clients stay."""
     month = (month or "").strip()
+    keys = delete_month_bills(conn, month)
     work = conn.execute(
         "DELETE FROM work_items WHERE month = %s RETURNING id",
         (month,),
     ).fetchall()
-    bills = conn.execute(
-        "DELETE FROM bills WHERE month = %s RETURNING id",
-        (month,),
-    ).fetchall()
-    return {"month": month, "work_items": len(work), "bills": len(bills)}
+    return {
+        "month": month,
+        "work_items": len(work),
+        "bills": len(keys),
+        "s3_keys": keys,
+    }
 
 
 def reassign_month_client(conn, month: str, source_id: int, target_id: int) -> None:

@@ -150,6 +150,15 @@ class ClientEmail(BaseModel):
     email: str = Field("", description="Email addresses. Blank clears the field.")
 
 
+class ClearMonthBilling(BaseModel):
+    """Reset Step 3 for a month — PDFs only, or PDFs plus stored work."""
+
+    include_work: bool = Field(
+        False,
+        description="When true, also delete stored work for the month (Step 2 datastore).",
+    )
+
+
 class BillFace(BaseModel):
     """Name, email, and delivery for one month's bill."""
 
