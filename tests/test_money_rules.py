@@ -566,3 +566,17 @@ def test_extract_rows_when_work_column_is_first():
     assert rows[0]["work"] == "15h 8 16"
     assert "mow" in [m["kind"] for m in parse_work_marks(rows[0]["work"])]
 
+
+def test_pick_editable_job_prefers_newer_stored_over_old_unsent():
+    from app.knowledge import pick_editable_job
+
+    sheet = {"tables": [{"columns": ["CLIENT", "DATE & WORK COMPLETED"], "rows": [["A", "8"]]}]}
+    smoke = {"tables": [{"columns": ["CLIENT", "DATE & WORK COMPLETED"], "rows": [["SMOKE", "1"]]}]}
+    jobs = [
+        {"id": "old-done", "status": "done", "month": "2026-11", "updated_at": "2026-11-01T10:00:00", "extract_json": smoke},
+        {"id": "sent", "status": "stored", "month": "2026-11", "updated_at": "2026-11-01T18:00:00", "extract_json": sheet},
+        {"id": "other", "status": "stored", "month": "2026-10", "updated_at": "2026-11-01T19:00:00", "extract_json": sheet},
+    ]
+    picked = pick_editable_job(jobs, "2026-11")
+    assert picked["id"] == "sent"
+

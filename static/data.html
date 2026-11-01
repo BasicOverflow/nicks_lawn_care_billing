@@ -171,6 +171,7 @@ async function loadClients() {
     const r = await api("/api/clients");
     renderClients(r.clients || []);
     fillManualClients(r.clients || []);
+    filterClients();
     clientsLoaded = true;
   } catch (e) {
     clientsLoaded = false;

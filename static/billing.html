@@ -259,6 +259,7 @@ function setReviewStatusHint(status) {
 
 function applySharedReview(r, options) {
   const forceShow = !!(options && options.forceShow);
+  const wantScroll = !!(options && options.scroll);
   if (reviewPinnedHidden && !forceShow) return;
   if (window._ocrRunning) return;
   if (!r || !r.job_id || !extractHasRows(r.extract)) {
@@ -271,39 +272,29 @@ function applySharedReview(r, options) {
     }
     return;
   }
-  if (r.job_id === currentJob && r.updated_at === reviewStamp) return;
+  const sec = el("reviewSection");
+  const hidden = !sec || sec.hidden;
+  if (r.job_id === currentJob && r.updated_at === reviewStamp) {
+    if (forceShow && hidden) {
+      showReview(r.extract, wantScroll);
+      setReviewStatusHint(r.status);
+    } else if (wantScroll && sec && !sec.hidden) {
+      sec.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    return;
+  }
   if (window._ocrRunning && r.job_id !== currentJob) return;
   if (reviewDirty || reviewSaving || editingReview()) return;
+  const newUnsent = r.status === "done" && r.job_id !== currentJob;
   currentJob = r.job_id;
   reviewStamp = r.updated_at;
   if (r.status === "stored") reviewCommitStamp = r.updated_at || reviewCommitStamp;
-  if (r.month && /^\d{4}-\d{2}$/.test(r.month)) el("month").value = r.month;
-  refreshMonthSuggest();
-  showReview(r.extract, !!(options && options.scroll));
-  setReviewStatusHint(r.status);
-}
-
-async function syncCurrentJobClosed() {
-  if (!currentJob || reviewDirty || reviewSaving || editingReview()) return;
-  try {
-    const j = await api("/api/jobs/" + currentJob);
-    if (j.status === "stored") {
-      reviewCommitStamp = j.updated_at || reviewCommitStamp;
-      reviewStamp = j.updated_at || reviewStamp;
-      const extract = j.extract;
-      if (!reviewPinnedHidden && extract && extractHasRows(extract)) {
-        showReview(extract, false);
-        setReviewStatusHint("stored");
-      }
-      if (window.revealBills) window.revealBills({ scroll: false });
-      else if (typeof loadMonths === "function") loadMonths();
-      return;
-    }
-    if (j.status === "cleared") {
-      dismissReview("Review cleared on another device.");
-    }
-  } catch (_) {
+  if (newUnsent && r.month && /^\d{4}-\d{2}$/.test(r.month)) {
+    el("month").value = r.month;
+    refreshMonthSuggest();
   }
+  showReview(r.extract, wantScroll);
+  setReviewStatusHint(r.status);
 }
 
 function cellInput(value) {
@@ -631,6 +622,7 @@ el("btnUpload").onclick = async () => {
     const r = await api("/api/upload", { method: "POST", body: fd });
     currentJob = r.job_id;
     window._ocrRunning = true;
+    reviewPinnedHidden = false;
     batch.forEach(p => URL.revokeObjectURL(p.url));
     stagedPhotos = stagedPhotos.filter(p => !batch.includes(p));
     renderPhotoPreview();
@@ -765,6 +757,12 @@ el("btnCommit").onclick = async () => {
       renderConflicts(r.conflicts);
       el("reviewMsg").textContent = "These names are not on the client list. Add them, or just make the bill, then send again.";
       el("reviewMsg").className = "msg";
+      return;
+    }
+    if (!(r.lines > 0)) {
+      el("reviewMsg").textContent =
+        "No mow, hedge, or priced jobs found in this table. Check the work boxes, then Send to datastore again.";
+      el("reviewMsg").className = "msg err";
       return;
     }
     const box = el("conflictBox");
@@ -1642,7 +1640,6 @@ function syncBillStep() {
   step.hidden = !show;
   if (el("btnGenerate")) el("btnGenerate").disabled = !show;
   refreshMonthSuggest();
-  if (show) refreshBills();
 }
 window.revealBills = (opts) => {
   const month = el("month").value;
@@ -1658,7 +1655,9 @@ window.revealBills = (opts) => {
 async function loadMonths() {
   const r = await api("/api/months");
   monthsWithWork = r.months || [];
+  window.monthsWithWork = monthsWithWork;
   syncBillStep();
+  if (monthsWithWork.includes(el("month").value)) refreshBills();
 }
 
 let packDownloads = {};
@@ -1945,6 +1944,8 @@ el("month").addEventListener("change", () => {
   el("genMsg").textContent = "";
   el("mailMsg").textContent = "";
   syncBillStep();
+  if (monthsWithWork.includes(el("month").value)) refreshBills();
+  else clearBillList();
   if (typeof syncWorkflowFromServer === "function") syncWorkflowFromServer();
 });
 
@@ -2010,22 +2011,14 @@ async function syncWorkflowFromServer(options) {
     const s = await api(path);
     if (s.review && typeof applySharedReview === "function") {
       applySharedReview(s.review, {
-        forceShow: forceReview || !reviewPinnedHidden,
+        forceShow: forceReview,
         scroll: scrollReview,
       });
     }
-    if (typeof syncCurrentJobClosed === "function") await syncCurrentJobClosed();
-    if (s.months_with_work) {
+    if (Array.isArray(s.months_with_work)) {
       monthsWithWork = s.months_with_work;
+      window.monthsWithWork = monthsWithWork;
       syncBillStep();
-    }
-    if (
-      s.workflow_month && /^\d{4}-\d{2}$/.test(s.workflow_month)
-      && s.review && s.review.job_id
-      && !reviewDirty && !editingReview()
-    ) {
-      el("month").value = s.workflow_month;
-      refreshMonthSuggest();
     }
     if (s.bills_rev != null && s.bills_rev !== lastBillsRev && month === el("month").value) {
       lastBillsRev = s.bills_rev;
@@ -2034,10 +2027,7 @@ async function syncWorkflowFromServer(options) {
     } else if (s.bills_rev != null) {
       lastBillsRev = s.bills_rev;
     }
-    if (s.work_rev != null && s.work_rev !== lastWorkRev) {
-      lastWorkRev = s.work_rev;
-      loadMonths();
-    }
+    if (s.work_rev != null) lastWorkRev = s.work_rev;
     if (s.clients_rev && s.clients_rev !== lastClientsRev && typeof loadClients === "function") {
       if (!window._clientsDirty) loadClients();
     }

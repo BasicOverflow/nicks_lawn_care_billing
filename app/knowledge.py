@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from difflib import SequenceMatcher
 from typing import Any
@@ -9,6 +10,43 @@ from typing import Any
 from . import db
 
 from ocr.work_marks import parse_work_marks
+
+
+def extract_has_rows(extract) -> bool:
+    if isinstance(extract, str):
+        try:
+            extract = json.loads(extract)
+        except Exception:
+            return False
+    for table in (extract or {}).get("tables") or []:
+        for row in (table or {}).get("rows") or []:
+            if any(str(cell or "").strip() for cell in (row or [])):
+                return True
+    return False
+
+
+def pick_editable_job(jobs: list[dict], month: str | None = None) -> dict | None:
+    """Newest unsent OCR, else the latest stored sheet for ``month``."""
+    month = (month or "").strip() or None
+    chosen = None
+    chosen_stamp = ""
+    for job in jobs:
+        status = str(job.get("status") or "")
+        job_month = str(job.get("month") or "")
+        if status not in {"done", "stored"}:
+            continue
+        if month and job_month != month:
+            continue
+        extract = job.get("extract_json")
+        if extract is None:
+            extract = job.get("extract")
+        if not extract_has_rows(extract):
+            continue
+        stamp = str(job.get("updated_at") or "")
+        if chosen is None or stamp > chosen_stamp:
+            chosen = job
+            chosen_stamp = stamp
+    return chosen
 
 
 def _col_role(name: str) -> str:

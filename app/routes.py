@@ -40,16 +40,7 @@ router = APIRouter(prefix="/api")
 
 
 def _extract_has_rows(extract) -> bool:
-    if isinstance(extract, str):
-        try:
-            extract = json.loads(extract)
-        except Exception:
-            return False
-    for table in (extract or {}).get("tables") or []:
-        for row in (table or {}).get("rows") or []:
-            if any(str(cell or "").strip() for cell in (row or [])):
-                return True
-    return False
+    return knowledge.extract_has_rows(extract)
 
 
 @router.get("/progress", tags=["status"], response_model=ProgressView)
@@ -340,55 +331,47 @@ def get_job(
     }
 
 
-def _find_open_review(conn) -> tuple[dict | None, str | None]:
-    """Newest OCR table waiting for review, plus how the last job closed."""
+def _find_editable_review(conn, month: str | None = None) -> tuple[dict | None, str | None]:
+    """Newest unsent OCR, or the latest sent sheet for the selected month.
+
+    Stored jobs are included so Step 2 stays editable after generate. An old
+    unsent job must not beat a newer stored sheet for the same month.
+    """
+    month = (month or "").strip() or None
     candidates = conn.execute(
         """
         SELECT id, month, sheet_kind, updated_at, extract_json, status
         FROM upload_jobs
-        WHERE status = 'done' AND extract_json IS NOT NULL
+        WHERE extract_json IS NOT NULL AND status IN ('done', 'stored')
         ORDER BY updated_at DESC NULLS LAST, created_at DESC
-        LIMIT 12
+        LIMIT 24
         """
     ).fetchall()
-    row = next((r for r in candidates if _extract_has_rows(r.get("extract_json"))), None)
+    picked = knowledge.pick_editable_job([dict(r) for r in candidates], month)
+    row = picked
     closed = None
     if not row:
-        latest = conn.execute(
-            """
-            SELECT status FROM upload_jobs
-            ORDER BY updated_at DESC NULLS LAST, created_at DESC
-            LIMIT 1
-            """
-        ).fetchone()
+        if month:
+            latest = conn.execute(
+                """
+                SELECT status FROM upload_jobs
+                WHERE month = %s
+                ORDER BY updated_at DESC NULLS LAST, created_at DESC
+                LIMIT 1
+                """,
+                (month,),
+            ).fetchone()
+        else:
+            latest = conn.execute(
+                """
+                SELECT status FROM upload_jobs
+                ORDER BY updated_at DESC NULLS LAST, created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
         if latest and latest.get("status") == "cleared":
             closed = latest["status"]
-    return row, closed
-
-
-def _find_editable_review(conn, month: str | None = None) -> tuple[dict | None, str | None]:
-    """Open OCR review, or the last sent sheet for a month so it can be edited again."""
-    row, closed = _find_open_review(conn)
-    if row:
-        out = dict(row)
-        out["status"] = "done"
-        return out, closed
-    month = (month or "").strip() or None
-    if month:
-        stored = conn.execute(
-            """
-            SELECT id, month, sheet_kind, updated_at, extract_json, status
-            FROM upload_jobs
-            WHERE status = 'stored' AND month = %s AND extract_json IS NOT NULL
-            ORDER BY updated_at DESC NULLS LAST, created_at DESC
-            LIMIT 8
-            """,
-            (month,),
-        ).fetchall()
-        hit = next((r for r in stored if _extract_has_rows(r.get("extract_json"))), None)
-        if hit:
-            return dict(hit), None
-    return None, closed
+    return (dict(row) if row else None), closed
 
 
 def _review_payload(row: dict | None, closed_status: str | None = None) -> dict:
@@ -560,7 +543,7 @@ async def commit_job(
             sheet_kind=sheet_kind,
             resolutions=[item.model_dump() for item in body.resolutions],
         )
-        if not result.get("conflicts"):
+        if not result.get("conflicts") and result.get("lines"):
             db.save_upload_job(
                 conn, job_id, "stored", "Stored",
                 extract=extract, month=month,
