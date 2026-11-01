@@ -166,6 +166,7 @@ el("btnClearPhotos").onclick = () => {
 };
 
 let reviewStamp = null;
+let reviewCommitStamp = null;
 let reviewDirty = false;
 let reviewSaving = false;
 let reviewTimer = null;
@@ -659,6 +660,7 @@ function dismissReview(message) {
   hideReview();
   currentJob = null;
   reviewStamp = null;
+  reviewCommitStamp = null;
   reviewDirty = false;
   if (message) {
     el("uploadMsg").textContent = message;
@@ -722,6 +724,8 @@ el("btnCommit").onclick = async () => {
     el("uploadMsg").className = "msg ok";
     el("reviewMsg").textContent = "Edits after this need Send to datastore again before generating PDFs.";
     reviewDirty = false;
+    reviewCommitStamp = r.updated_at || reviewStamp || reviewCommitStamp;
+    if (r.updated_at) reviewStamp = r.updated_at;
     if (window.revealBills) window.revealBills();
   } catch (e) {
     el("reviewMsg").textContent = e.message;
@@ -1761,6 +1765,14 @@ el("btnGenerate").onclick = async () => {
   if (!month) return;
   if (reviewDirty) {
     el("genMsg").textContent = "You have unsaved review edits. Send to datastore first.";
+    el("genMsg").className = "msg err";
+    return;
+  }
+  if (
+    currentJob && reviewCommitStamp && reviewStamp
+    && reviewStamp !== reviewCommitStamp
+  ) {
+    el("genMsg").textContent = "The review table changed after the last send. Send to datastore again.";
     el("genMsg").className = "msg err";
     return;
   }

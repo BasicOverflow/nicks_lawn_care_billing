@@ -475,6 +475,13 @@ async def commit_job(
                 conn, job_id, "stored", "Stored",
                 extract=extract, month=month,
             )
+            stamp = conn.execute(
+                "SELECT updated_at FROM upload_jobs WHERE id = %s",
+                (job_id,),
+            ).fetchone()
+            if stamp and stamp.get("updated_at") is not None:
+                ts = stamp["updated_at"]
+                result["updated_at"] = ts.isoformat() if hasattr(ts, "isoformat") else ts
     return result
 
 
