@@ -171,6 +171,7 @@ var reviewCommitStamp = null;
 var reviewDirty = false;
 var reviewSaving = false;
 var reviewTimer = null;
+var reviewPinnedHidden = false;
 
 function extractHasRows(extract) {
   const tables = (extract && extract.tables) || [];
@@ -201,12 +202,11 @@ function showReview(extract, scroll) {
   }
   currentExtract = extract;
   const sec = el("reviewSection");
-  const reveal = scroll || sec.hidden;
   sec.hidden = false;
   el("btnCommit").hidden = false;
   el("btnClearReview").hidden = false;
   renderTable(currentExtract);
-  if (reveal) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (scroll === true) sec.scrollIntoView({ behavior: "smooth", block: "start" });
   return true;
 }
 
@@ -257,7 +257,9 @@ function setReviewStatusHint(status) {
   }
 }
 
-function applySharedReview(r) {
+function applySharedReview(r, options) {
+  const forceShow = !!(options && options.forceShow);
+  if (reviewPinnedHidden && !forceShow) return;
   if (window._ocrRunning) return;
   if (!r || !r.job_id || !extractHasRows(r.extract)) {
     if (
@@ -269,17 +271,15 @@ function applySharedReview(r) {
     }
     return;
   }
-  const hidden = el("reviewSection") && el("reviewSection").hidden;
-  if (r.job_id === currentJob && r.updated_at === reviewStamp && !hidden) return;
+  if (r.job_id === currentJob && r.updated_at === reviewStamp) return;
   if (window._ocrRunning && r.job_id !== currentJob) return;
   if (reviewDirty || reviewSaving || editingReview()) return;
-  const reveal = !currentJob || r.job_id !== currentJob || hidden;
   currentJob = r.job_id;
   reviewStamp = r.updated_at;
   if (r.status === "stored") reviewCommitStamp = r.updated_at || reviewCommitStamp;
   if (r.month && /^\d{4}-\d{2}$/.test(r.month)) el("month").value = r.month;
   refreshMonthSuggest();
-  showReview(r.extract, reveal);
+  showReview(r.extract, !!(options && options.scroll));
   setReviewStatusHint(r.status);
 }
 
@@ -291,11 +291,11 @@ async function syncCurrentJobClosed() {
       reviewCommitStamp = j.updated_at || reviewCommitStamp;
       reviewStamp = j.updated_at || reviewStamp;
       const extract = j.extract;
-      if (extract && extractHasRows(extract)) {
+      if (!reviewPinnedHidden && extract && extractHasRows(extract)) {
         showReview(extract, false);
         setReviewStatusHint("stored");
       }
-      if (window.revealBills) window.revealBills();
+      if (window.revealBills) window.revealBills({ scroll: false });
       else if (typeof loadMonths === "function") loadMonths();
       return;
     }
@@ -717,6 +717,7 @@ el("btnClearReview").onclick = async () => {
   }
   if (status === "stored") {
     if (!window.confirm("Hide this table? Work stays in the datastore until you send again.")) return;
+    reviewPinnedHidden = true;
     hideReview();
     el("reviewMsg").textContent = "";
     return;
@@ -777,7 +778,7 @@ el("btnCommit").onclick = async () => {
     reviewCommitStamp = r.updated_at || reviewStamp || reviewCommitStamp;
     if (r.updated_at) reviewStamp = r.updated_at;
     setReviewStatusHint("stored");
-    if (window.revealBills) window.revealBills();
+    if (window.revealBills) window.revealBills({ scroll: true });
   } catch (e) {
     el("reviewMsg").textContent = e.message;
     el("reviewMsg").className = "msg err";
@@ -1643,15 +1644,16 @@ function syncBillStep() {
   refreshMonthSuggest();
   if (show) refreshBills();
 }
-window.revealBills = () => {
+window.revealBills = (opts) => {
   const month = el("month").value;
   if (month && !monthsWithWork.includes(month)) monthsWithWork.push(month);
   const step = el("stepBills");
   step.hidden = false;
   el("btnGenerate").disabled = false;
   refreshBills();
-  if (typeof syncWorkflowFromServer === "function") syncWorkflowFromServer();
-  step.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (opts && opts.scroll === true) {
+    step.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 };
 async function loadMonths() {
   const r = await api("/api/months");
@@ -1933,10 +1935,11 @@ el("btnCloseViewer").onclick = () => {
 };
 
 el("btnRefresh").onclick = showMonthBills;
-el("btnEditWork").onclick = () => {
-  if (typeof syncWorkflowFromServer === "function") syncWorkflowFromServer();
-  const sec = el("reviewSection");
-  if (sec) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+el("btnEditWork").onclick = async () => {
+  reviewPinnedHidden = false;
+  if (typeof syncWorkflowFromServer === "function") {
+    await syncWorkflowFromServer({ forceReview: true, scrollReview: true });
+  }
 };
 el("month").addEventListener("change", () => {
   el("genMsg").textContent = "";
@@ -1974,10 +1977,11 @@ window.onJobDone = (p) => {
       el("genMsg").className = "msg ok";
     }
     if (month && el("month").value === month) {
-      if (window.revealBills) window.revealBills();
-      else refreshBills();
+      const step = el("stepBills");
+      if (step) step.hidden = false;
+      refreshBills();
+      if (typeof loadMonths === "function") loadMonths();
     }
-    if (typeof syncWorkflowFromServer === "function") syncWorkflowFromServer();
     return;
   }
   if (p.kind === "email") {
@@ -1997,12 +2001,19 @@ let lastBillsRev = "";
 let lastClientsRev = "";
 let lastWorkRev = null;
 
-async function syncWorkflowFromServer() {
+async function syncWorkflowFromServer(options) {
   const month = el("month") && el("month").value ? el("month").value : "";
   const path = month ? `/api/ui/sync?month=${encodeURIComponent(month)}` : "/api/ui/sync";
+  const forceReview = !!(options && options.forceReview);
+  const scrollReview = !!(options && options.scrollReview);
   try {
     const s = await api(path);
-    if (s.review && typeof applySharedReview === "function") applySharedReview(s.review);
+    if (s.review && typeof applySharedReview === "function") {
+      applySharedReview(s.review, {
+        forceShow: forceReview || !reviewPinnedHidden,
+        scroll: scrollReview,
+      });
+    }
     if (typeof syncCurrentJobClosed === "function") await syncCurrentJobClosed();
     if (s.months_with_work) {
       monthsWithWork = s.months_with_work;
