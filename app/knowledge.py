@@ -11,6 +11,44 @@ from . import db
 from ocr.work_marks import parse_work_marks
 
 
+def _col_role(name: str) -> str:
+    """Same roles as OCR header detection (name / work / price / …)."""
+    c = (name or "").lower()
+    if any(k in c for k in ("contact", "client", "name")):
+        return "name"
+    if any(k in c for k in ("price", "hedge", "lawn", "amount")) and "work" not in c and "date" not in c:
+        return "price"
+    if any(k in c for k in ("date", "work", "day", "completed")):
+        return "work"
+    if "note" in c or "billing" in c:
+        return "notes"
+    if "address" in c:
+        return "address"
+    return ""
+
+
+def _column_index(cols: list[str], role: str) -> int:
+    for i, c in enumerate(cols):
+        if _col_role(c) == role:
+            return i
+    return -1
+
+
+def _name_column_index(cols: list[str]) -> int:
+    i = _column_index(cols, "name")
+    return i if i >= 0 else 0
+
+
+def _work_column_index(cols: list[str]) -> int:
+    i = _column_index(cols, "work")
+    if i >= 0:
+        return i
+    for i, c in enumerate(cols):
+        if re.search(r"date|work|day", str(c or ""), re.I):
+            return i
+    return 1 if len(cols) > 1 else -1
+
+
 def _cell(row: list, idx: int) -> str:
     if idx < 0 or idx >= len(row):
         return ""
@@ -30,22 +68,33 @@ def extract_rows(extract: dict) -> list[dict]:
     for t in extract.get("tables") or []:
         if not isinstance(t, dict):
             continue
-        cols = [str(c).lower() for c in (t.get("columns") or [])]
-        name_i = next((i for i, c in enumerate(cols) if "contact" in c or "name" in c or i == 0), 0)
-        addr_i = next((i for i, c in enumerate(cols) if "address" in c and "billing" not in c), -1)
-        price_i = next((i for i, c in enumerate(cols) if "price" in c or "hedge" in c or "mow" in c), -1)
-        bill_i = next((i for i, c in enumerate(cols) if "billing" in c or "note" in c or "email" in c), -1)
+        cols_raw = [str(c) for c in (t.get("columns") or [])]
+        cols = [c.lower() for c in cols_raw]
+        name_i = _name_column_index(cols)
+        work_i = _work_column_index(cols)
+        addr_i = _column_index(cols, "address")
+        price_i = _column_index(cols, "price")
+        bill_i = _column_index(cols, "notes")
+        if bill_i < 0:
+            bill_i = next(
+                (i for i, c in enumerate(cols) if "billing" in c or "email" in c),
+                -1,
+            )
         for row in t.get("rows") or []:
             if not isinstance(row, list) or not any(str(c).strip() for c in row):
                 continue
             name = _cell(row, name_i)
             if not name or name.upper() in ("[UNCLEAR]", "CONTACT", "NAME"):
                 continue
+            work = _cell(row, work_i) if work_i >= 0 else ""
+            if not work:
+                work = _work_text_legacy(row, name_i, addr_i)
             out.append({
                 "name": name,
                 "address": _cell(row, addr_i) if addr_i >= 0 else "",
                 "price": _price(_cell(row, price_i)) if price_i >= 0 else None,
                 "notes": _cell(row, bill_i) if bill_i >= 0 else "",
+                "work": work,
                 "cells": [str(c) for c in row],
             })
     return out
@@ -237,7 +286,7 @@ def open_conflicts(extract: dict, roster, resolutions: list[dict] | None) -> lis
             already = key in known
         if not key or already or key in decided:
             continue
-        work = _work_text(row)
+        work = row.get("work") or _work_text(row)
         if key not in found:
             found[key] = {
                 "name": row["name"],
@@ -339,25 +388,35 @@ def confirm_extract(
             conn,
             client_id=cid,
             month=month,
-            text=_work_text(r),
+            text=str(r.get("work") or _work_text(r)).strip(),
             source_job_id=source_job_id,
         )
         clients += 1
     return {"written": clients, "lines": lines, "month": month, "conflicts": []}
 
 
-def _work_text(row: dict) -> str:
-    """Days and jobs from the sheet. The address cell is not a visit."""
+def _work_text_legacy(row: dict, name_i: int, addr_i: int) -> str:
+    """Fallback when no work column header: all cells except name and address."""
     cells = [str(cell).strip() for cell in (row.get("cells") or [])]
     address = (row.get("address") or "").strip()
     parts = []
     for index, cell in enumerate(cells):
-        if index == 0 or not cell:
+        if index == name_i or not cell:
+            continue
+        if addr_i >= 0 and index == addr_i:
             continue
         if address and cell == address:
             continue
         parts.append(cell)
     return " ".join(parts)
+
+
+def _work_text(row: dict) -> str:
+    """Work cell text for one flattened row (uses ``work`` when present)."""
+    work = str(row.get("work") or "").strip()
+    if work:
+        return work
+    return _work_text_legacy(row, name_i=0, addr_i=-1)
 
 
 def store_work_text(conn, *, client_id: int, month: str, text: str, source_job_id: str | None = None) -> int:

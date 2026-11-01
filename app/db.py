@@ -472,7 +472,7 @@ def save_upload_job(conn, job_id: str, status: str, progress_msg: str = "",
 
 
 def save_review_draft(conn, job_id: str, extract: dict, month: str | None, sheet_kind: str | None) -> dict | None:
-    """Write in-progress table edits. Leaves a stored job alone."""
+    """Write in-progress table edits (open or already sent, before a re-send)."""
     row = conn.execute(
         """
         UPDATE upload_jobs SET
@@ -480,7 +480,7 @@ def save_review_draft(conn, job_id: str, extract: dict, month: str | None, sheet
           month = COALESCE(%s, month),
           sheet_kind = COALESCE(%s, sheet_kind),
           updated_at = NOW()
-        WHERE id = %s AND status = 'done'
+        WHERE id = %s AND status IN ('done', 'stored')
         RETURNING id, month, sheet_kind, updated_at
         """,
         (json.dumps(extract), month or None, sheet_kind or None, job_id),

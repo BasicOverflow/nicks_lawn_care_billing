@@ -696,6 +696,7 @@ el("btnCommit").onclick = async () => {
     return;
   }
   try {
+    if (reviewDirty) await saveReviewDraft();
     const r = await api("/api/jobs/" + currentJob + "/commit", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
@@ -719,7 +720,8 @@ el("btnCommit").onclick = async () => {
     }
     el("uploadMsg").textContent = `Saved ${r.lines != null ? r.lines : r.written} bill lines for ${r.month}.`;
     el("uploadMsg").className = "msg ok";
-    el("reviewMsg").textContent = "";
+    el("reviewMsg").textContent = "Edits after this need Send to datastore again before generating PDFs.";
+    reviewDirty = false;
     if (window.revealBills) window.revealBills();
   } catch (e) {
     el("reviewMsg").textContent = e.message;
@@ -1757,6 +1759,22 @@ function escapeHtml(s) {
 el("btnGenerate").onclick = async () => {
   const month = el("month").value;
   if (!month) return;
+  if (reviewDirty) {
+    el("genMsg").textContent = "You have unsaved review edits. Send to datastore first.";
+    el("genMsg").className = "msg err";
+    return;
+  }
+  if (currentJob && el("reviewSection") && !el("reviewSection").hidden && extractHasRows(collectExtract())) {
+    try {
+      const open = await api("/api/jobs/" + currentJob);
+      if (open.status === "done") {
+        el("genMsg").textContent = "Send this sheet to the datastore before generating PDFs.";
+        el("genMsg").className = "msg err";
+        return;
+      }
+    } catch (_) {
+    }
+  }
   try {
     const job = await api("/api/billing/generate", {
       method: "POST",

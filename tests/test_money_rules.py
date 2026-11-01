@@ -532,3 +532,37 @@ def test_empty_work_rows_are_left_out():
     assert "Skip a row when the work cell is blank" in prompt
     assert "If the work cell is blank on the paper, use" not in prompt
 
+
+def test_extract_rows_work_column_not_name_or_price():
+    from app.knowledge import extract_rows
+
+    extract = {
+        "tables": [{
+            "columns": ["CLIENT", "Address", "Price", "DATE & WORK COMPLETED"],
+            "rows": [["BOB TEST", "1 Main St", "$75", "8 16h | bush trim 50"]],
+        }],
+    }
+    rows = extract_rows(extract)
+    assert len(rows) == 1
+    assert rows[0]["work"] == "8 16h | bush trim 50"
+    kinds = [m["kind"] for m in parse_work_marks(rows[0]["work"])]
+    assert "mow" in kinds
+    assert "hedge" in kinds
+    assert "custom" in kinds
+    assert "$75" not in rows[0]["work"]
+
+
+def test_extract_rows_when_work_column_is_first():
+    from app.knowledge import extract_rows
+
+    extract = {
+        "tables": [{
+            "columns": ["DATE & WORK COMPLETED", "CLIENT"],
+            "rows": [["15h 8 16", "SMITH, Jane"]],
+        }],
+    }
+    rows = extract_rows(extract)
+    assert rows[0]["name"] == "SMITH, Jane"
+    assert rows[0]["work"] == "15h 8 16"
+    assert "mow" in [m["kind"] for m in parse_work_marks(rows[0]["work"])]
+

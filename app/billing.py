@@ -562,7 +562,8 @@ def restore_job_dates(conn, month: str) -> None:
         if not isinstance(extract, dict):
             continue
         for row in extract_rows(extract):
-            marks = [mark for mark in parse_work_marks(_work_text(row)) if mark["kind"] != "note"]
+            text = str(row.get("work") or _work_text(row)).strip()
+            marks = [mark for mark in parse_work_marks(text) if mark["kind"] != "note"]
             if not marks:
                 continue
             chosen = filing_client(row["name"], roster) if roster else None
@@ -645,7 +646,6 @@ def generate_month_bills(conn, month: str) -> list[dict]:
     from . import db
 
     _retarget_month_clients(conn, month)
-    restore_job_dates(conn, month)
     rows = db.work_for_month(conn, month)
     by_client: dict[int, list] = defaultdict(list)
     meta: dict[int, dict] = {}
