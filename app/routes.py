@@ -495,7 +495,7 @@ def save_draft(
 
 @router.post("/jobs/{job_id}/clear", tags=["uploads"])
 def clear_job(job_id: str = ApiPath(..., description="Upload id of the open review to drop.")):
-    """Remove the open review tables without saving them as clients or work.
+    """Remove review tables. Unsent OCR is dropped; sent sheets also lose their work lines.
 
     Other open browsers drop the same review on their next refresh.
     """
@@ -503,7 +503,7 @@ def clear_job(job_id: str = ApiPath(..., description="Upload id of the open revi
         row = db.clear_review(conn, job_id)
     if not row:
         raise HTTPException(404, "open review not found")
-    return {"ok": True, "job_id": row["id"]}
+    return {"ok": True, "job_id": row["id"], "work_items": row.get("work_items", 0)}
 
 
 @router.post("/jobs/{job_id}/commit", tags=["uploads"])

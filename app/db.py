@@ -489,18 +489,32 @@ def save_review_draft(conn, job_id: str, extract: dict, month: str | None, sheet
 
 
 def clear_review(conn, job_id: str) -> dict | None:
-    """Drop an open review without writing clients or work."""
-    return conn.execute(
+    """Drop an open or sent review. Sent sheets lose their datastore work lines too."""
+    row = conn.execute(
+        "SELECT id, status, month FROM upload_jobs WHERE id = %s",
+        (job_id,),
+    ).fetchone()
+    if not row or row.get("status") not in ("done", "stored"):
+        return None
+    work_items = 0
+    if row.get("status") == "stored":
+        month = (row.get("month") or "").strip()
+        if month:
+            work_items = delete_work_from_job(conn, month, job_id)
+    cleared = conn.execute(
         """
         UPDATE upload_jobs SET
           status = 'cleared',
           progress_msg = 'Review cleared',
           updated_at = NOW()
-        WHERE id = %s AND status = 'done'
+        WHERE id = %s AND status IN ('done', 'stored')
         RETURNING id, status, updated_at
         """,
         (job_id,),
     ).fetchone()
+    if not cleared:
+        return None
+    return {**dict(cleared), "work_items": work_items}
 
 
 def get_upload_job(conn, job_id: str) -> dict | None:

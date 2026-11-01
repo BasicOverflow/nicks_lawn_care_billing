@@ -24,7 +24,7 @@ requirements.txt
 
 ## Pages
 
-- **Data** (`/data`) — type mow/hedge prices and contacts; photograph work-completed sheets → review → **Send to datastore**. **Clear review** drops the tables without saving. Chat can query or update stored data.
+- **Data** (`/data`) — type mow/hedge prices and contacts; photograph work-completed sheets → review → **Send to datastore**. **Clear review** drops the tables; if you already sent, it also removes that sheet’s work lines (PDFs need **Clear Step 3**). Chat can query or update stored data.
 - **Billing** (`/billing`) — generate PDFs → download zip / tax TSV → **Email all** via SMTP.
 - Header: model status, **Load model**, global progress bar.
 

@@ -172,7 +172,6 @@ var reviewCommitStamp = null;
 var reviewDirty = false;
 var reviewSaving = false;
 var reviewTimer = null;
-var reviewPinnedHidden = false;
 
 function extractHasRows(extract) {
   const tables = (extract && extract.tables) || [];
@@ -261,7 +260,6 @@ function setReviewStatusHint(status) {
 function applySharedReview(r, options) {
   const forceShow = !!(options && options.forceShow);
   const wantScroll = !!(options && options.scroll);
-  if (reviewPinnedHidden && !forceShow) return;
   if (window._ocrRunning) return;
   if (!r || !r.job_id || !extractHasRows(r.extract)) {
     if (
@@ -623,7 +621,6 @@ el("btnUpload").onclick = async () => {
     const r = await api("/api/upload", { method: "POST", body: fd });
     currentJob = r.job_id;
     window._ocrRunning = true;
-    reviewPinnedHidden = false;
     batch.forEach(p => URL.revokeObjectURL(p.url));
     stagedPhotos = stagedPhotos.filter(p => !batch.includes(p));
     renderPhotoPreview();
@@ -703,23 +700,28 @@ function dismissReview(message) {
 el("btnClearReview").onclick = async () => {
   if (!currentJob) return;
   let status = "done";
+  let jobMonth = el("month").value;
   try {
     const j = await api("/api/jobs/" + currentJob);
     status = j.status || status;
+    if (j.month) jobMonth = j.month;
   } catch (_) {
   }
-  if (status === "stored") {
-    if (!window.confirm("Hide this table? Work stays in the datastore until you send again.")) return;
-    reviewPinnedHidden = true;
-    hideReview();
-    el("reviewMsg").textContent = "";
-    return;
-  }
-  if (!window.confirm("Clear this review? The tables will be dropped and nothing will be saved.")) return;
+  const stored = status === "stored";
+  const confirmMsg = stored
+    ? `Clear this review and remove the work it sent for ${monthLabel(jobMonth)}?\n\nGenerated PDFs stay until you use Clear Step 3.`
+    : "Clear this review? The tables will be dropped and nothing will be saved.";
+  if (!window.confirm(confirmMsg)) return;
   const job = currentJob;
   try {
-    await api("/api/jobs/" + job + "/clear", { method: "POST" });
-    dismissReview("Review cleared. Nothing was saved.");
+    const r = await api("/api/jobs/" + job + "/clear", { method: "POST" });
+    const n = r.work_items || 0;
+    dismissReview(
+      stored
+        ? `Review cleared. Removed ${n} work line${n === 1 ? "" : "s"} from the datastore.`
+        : "Review cleared. Nothing was saved.",
+    );
+    if (stored && typeof loadMonths === "function") await loadMonths();
   } catch (e) {
     el("reviewMsg").textContent = e.message;
     el("reviewMsg").className = "msg err";
@@ -1936,7 +1938,6 @@ el("btnCloseViewer").onclick = () => {
 
 el("btnRefresh").onclick = showMonthBills;
 el("btnEditWork").onclick = async () => {
-  reviewPinnedHidden = false;
   if (typeof syncWorkflowFromServer === "function") {
     await syncWorkflowFromServer({ forceReview: true, scrollReview: true });
   }
