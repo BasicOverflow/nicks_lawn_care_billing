@@ -580,3 +580,17 @@ def test_pick_editable_job_prefers_newer_stored_over_old_unsent():
     picked = pick_editable_job(jobs, "2026-11")
     assert picked["id"] == "sent"
 
+
+def test_chat_wipe_month_natural_phrases():
+    from datetime import date
+
+    from app.chatdata import _wipe_month
+
+    today = date(2026, 11, 1)
+    assert _wipe_month("delete november", today=today) == "2026-11"
+    assert _wipe_month("delete data for november", today=today) == "2026-11"
+    assert _wipe_month("wipe nov 2026", today=today) == "2026-11"
+    assert _wipe_month("clear 2026-11 billing", today=today) == "2026-11"
+    assert _wipe_month("what happened in november", today=today) is None
+    assert _wipe_month("delete november work", today=today) == "2026-11"
+

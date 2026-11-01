@@ -10,7 +10,7 @@ import re
 from datetime import date
 from typing import Any
 
-from . import db
+from . import db, storage
 
 CHAT_REPLY_SCHEMA = {
     "type": "object",
@@ -229,7 +229,7 @@ def apply_mutations(conn, mutations: list[dict]) -> list[str]:
                 if not re.fullmatch(r"20\d{2}-\d{2}", month):
                     applied.append("skipped delete_work_month (month must be YYYY-MM)")
                     continue
-                cleared = db.delete_month_work(conn, month)
+                cleared = _clear_month(conn, month)
                 applied.append(
                     f"deleted {cleared['work_items']} work lines and {cleared['bills']} bills for {month}"
                 )
@@ -256,18 +256,8 @@ _MONTH_NAMES = {
 }
 
 
-def _wipe_month(question: str, *, today: date | None = None) -> str | None:
-    """YYYY-MM when the user asked to delete a whole month of work. Otherwise None.
-
-    This does not call the model. A month-wide delete is one statement, and
-    asking the model to list every work id was returning an empty reply.
-    """
-    text = (question or "").strip().lower()
-    if not re.search(r"\b(delete|remove|wipe|clear|erase|drop)\b", text):
-        return None
-    if not re.search(r"\b(work[-\s]?completed|work|jobs?|visits?|mows?|mowing|bills?|invoices?)\b", text):
-        return None
-    today = today or date.today()
+def _month_from_chat_text(text: str, *, today: date) -> str | None:
+    """Resolve YYYY-MM from explicit id or a month name (optional year)."""
     explicit = re.search(r"\b(20\d{2})-(\d{2})\b", text)
     if explicit:
         month_n = int(explicit.group(2))
@@ -288,11 +278,46 @@ def _wipe_month(question: str, *, today: date | None = None) -> str | None:
     return f"{year}-{month_n:02d}"
 
 
+def _clear_month(conn, month: str) -> dict:
+    """Drop work and bill rows for a month and remove bill PDFs from storage."""
+    cleared = db.delete_month_work(conn, month)
+    for key in cleared.get("s3_keys") or []:
+        storage.delete_key(key)
+    return cleared
+
+
+def _wipe_month(question: str, *, today: date | None = None) -> str | None:
+    """YYYY-MM when the user asked to delete a whole month of work. Otherwise None.
+
+    This does not call the model. A month-wide delete is one statement, and
+    asking the model to list every work id was returning an empty reply.
+    """
+    text = (question or "").strip().lower()
+    if not re.search(r"\b(delete|remove|wipe|clear|erase|drop)\b", text):
+        return None
+    today = today or date.today()
+    month = _month_from_chat_text(text, today=today)
+    if not month:
+        return None
+    if re.search(r"\b20\d{2}-\d{2}\b", text):
+        return month
+    names = "|".join(sorted(_MONTH_NAMES, key=len, reverse=True))
+    if re.search(rf"\b({names})\b", text):
+        return month
+    if re.search(
+        r"\b(work[-\s]?completed|work|jobs?|visits?|mows?|mowing|bills?|invoices?|"
+        r"pdfs?|data(?:store)?|billing|everything|all|stored)\b",
+        text,
+    ):
+        return month
+    return None
+
+
 def answer(conn, question: str, history: list[dict[str, str]] | None = None) -> dict:
     """Chat: answer and optionally mutate datastore. Returns {answer, mutations_applied}."""
     direct = _wipe_month(question)
     if direct:
-        cleared = db.delete_month_work(conn, direct)
+        cleared = _clear_month(conn, direct)
         work_n = cleared["work_items"]
         bill_n = cleared["bills"]
         if work_n or bill_n:
@@ -335,7 +360,7 @@ def answer(conn, question: str, history: list[dict[str, str]] | None = None) -> 
         "- add_work: set client_id or client_name, month (YYYY-MM), description, amount.\n"
         "- delete_work: set work_id.\n"
         "- delete_work_month: set month YYYY-MM to delete every work line and bill for that month. "
-        "Use this for 'delete all September work'. Do not emit one delete_work per row.\n"
+        "Use this for 'delete all September work' or 'delete November'. Do not emit one delete_work per row.\n"
         "Use ids from the snapshot. Never invent clients. Do not delete clients.\n"
         "If the user is only asking a question, mutations=[].\n"
         "If they ask to change data, include mutations and summarize them in reply.\n\n"
