@@ -45,7 +45,8 @@ def normalize_work_marks(text: str) -> str:
     flattened = re.sub(r"(\d[A-Za-z]*)\s*,\s*(?=[A-Za-z$])", r"\1 ", flattened)
     flattened = re.sub(r"(\d{1,2})\s+h\b", r"\1h", flattened, flags=re.I)
     flattened = re.sub(r"(\d{1,2})\s+hedge\s*(?=\||\s*$)", r"\1h", flattened, flags=re.I)
-    flattened = re.sub(r"\$\s*(\d)", r" \1", flattened)
+    # Keep `$` so $15 stays a price. Only close up `$ 15` → `$15`.
+    flattened = re.sub(r"\$\s+(\d)", r"$\1", flattened)
     return _SPACES.sub(" ", flattened).strip()
 
 
@@ -66,21 +67,29 @@ def _strip_address_tail(text: str) -> str:
 
 
 def _job_from_chunk(chunk: str) -> tuple[dict | None, str]:
-    """Return a custom job parsed from the end of chunk, plus any leftover day text."""
+    """Return a custom job parsed from the end of chunk, plus any leftover day text.
+
+    `$15` is always a price. A bare number after a job name is also a price, even
+    when it is 1–31 (dump run $15 must not become mowing on the 15th).
+    """
     text = _strip_address_tail(chunk.strip())
     if not text or not re.search(r"[A-Za-z]", text):
         return None, chunk.strip()
-    trailing = re.search(r"\s+(?P<trail>[1-9]|[12]\d|3[01])(?!\d)\s*$", text)
-    trailing_day = trailing.group("trail") if trailing else ""
-    core = text[: trailing.start()].strip() if trailing else text
-    amt_match = re.search(r"\s+\$?\s*(?P<amt>\d+(?:\.\d{1,2})?)\s*$", core)
-    if not amt_match:
-        return None, text
-    end = amt_match.end()
-    house = _HOUSE_AFTER.match(core, end)
-    if house:
-        end = house.end()
-    head = core[: amt_match.start()].strip()
+    leftover_after = ""
+    dollars = list(re.finditer(r"\$\s*(?P<amt>\d+(?:\.\d{1,2})?)", text))
+    if dollars:
+        amt_match = dollars[-1]
+        leftover_after = text[amt_match.end():].strip()
+        head = text[: amt_match.start()].strip()
+        amount = float(amt_match.group("amt"))
+    else:
+        amt_match = re.search(r"\s+(?P<amt>\d+(?:\.\d{1,2})?)\s*$", text)
+        if not amt_match:
+            return None, text
+        head = text[: amt_match.start()].strip()
+        amount = float(amt_match.group("amt"))
+    if amount <= 0:
+        return None, chunk.strip()
     split = re.match(
         r"^(?:(?P<prefix>(?:(?:[1-9]|[12]\d|3[01])[hH]?\s+)+))(?P<name>[A-Za-z].+)$",
         head,
@@ -92,7 +101,8 @@ def _job_from_chunk(chunk: str) -> tuple[dict | None, str]:
         prefix = ""
         name = head
     name = re.sub(r"\s+", " ", name).strip(" ;,|")
-    if not name or not re.search(r"[A-Za-z]", name):
+    letters = re.sub(r"\b(?:[1-9]|[12]\d|3[01])[hH]\b", "", name)
+    if not name or not re.search(r"[A-Za-z]", letters):
         return None, chunk.strip()
     day = None
     leftover_prefix = prefix
@@ -103,10 +113,7 @@ def _job_from_chunk(chunk: str) -> tuple[dict | None, str]:
         if day_match:
             day = int(day_match.group("day"))
             leftover_prefix = prefix[: day_match.start()].strip()
-    amount = float(amt_match.group("amt"))
-    if amount <= 0:
-        return None, chunk.strip()
-    leftover = " ".join(part for part in (leftover_prefix, trailing_day) if part).strip()
+    leftover = " ".join(part for part in (leftover_prefix, leftover_after) if part).strip()
     return {
         "kind": "custom",
         "name": name,
@@ -117,8 +124,17 @@ def _job_from_chunk(chunk: str) -> tuple[dict | None, str]:
 
 def _day_marks(text: str) -> list[dict]:
     """Bare days and hedge marks from text with no priced job at the end."""
+    prices = [
+        (m.start("amt"), m.end("amt"))
+        for m in re.finditer(r"\$\s*(?P<amt>\d+(?:\.\d{1,2})?)", text)
+    ]
     marks: list[dict] = []
     for match in _DAY_TOKEN.finditer(text):
+        start, end = match.start("day"), match.end("day")
+        if any(start >= a and end <= b for a, b in prices):
+            continue
+        if re.search(r"\$\s*$", text[:start]):
+            continue
         day = int(match.group("day"))
         if match.group("mark"):
             marks.append({"kind": "hedge", "day": day, "name": "", "amount": None})

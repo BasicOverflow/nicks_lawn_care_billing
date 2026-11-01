@@ -13,6 +13,30 @@ def test_custom_amount_without_dollar():
     assert ("custom", None, "bush trimming", 50.0) in marks
 
 
+def test_priced_job_under_32_is_not_a_mow_day():
+    marks = _kinds("2 BRANCHES DUMP RUN $15 | 9 19 26")
+    assert ("custom", 2, "BRANCHES DUMP RUN", 15.0) in marks
+    assert ("mow", 9, "", None) in marks
+    assert ("mow", 19, "", None) in marks
+    assert ("mow", 26, "", None) in marks
+    assert ("mow", 15, "", None) not in marks
+    assert ("mow", 2, "", None) not in marks
+    marks = _kinds("2 BRANCHES DUMP RUN 15 | 9 19 26")
+    assert ("custom", 2, "BRANCHES DUMP RUN", 15.0) in marks
+    assert ("mow", 15, "", None) not in marks
+    rows = compile_invoice_lines([
+        {"description": "BRANCHES DUMP RUN", "amount": 15, "day_or_note": "2"},
+        {"description": "Mowing 9", "amount": 0, "day_or_note": "9", "mow_price": 45},
+        {"description": "Mowing 19", "amount": 0, "day_or_note": "19", "mow_price": 45},
+        {"description": "Mowing 26", "amount": 0, "day_or_note": "26", "mow_price": 45},
+    ], "2026-11")
+    by_name = {row["description"]: row for row in rows}
+    assert by_name["BRANCHES DUMP RUN"]["date"] == "11/2"
+    assert by_name["BRANCHES DUMP RUN"]["amount"] == __import__("decimal").Decimal("15.00")
+    assert by_name["Mowing"]["date"] == "11/9, 11/19, 11/26"
+    assert by_name["Mowing"]["amount"] == __import__("decimal").Decimal("135.00")
+
+
 def test_address_after_price_is_not_a_visit():
     marks = _kinds("trimming $50 12 Main St")
     kinds = [m[0] for m in marks]
