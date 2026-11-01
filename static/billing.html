@@ -81,6 +81,7 @@
     <div class="row-actions">
       <button type="button" id="btnGenerate">Generate PDFs</button>
       <button type="button" id="btnRefresh" class="secondary">Refresh list</button>
+      <button type="button" id="btnEditWork" class="secondary">Edit uploaded work</button>
     </div>
     <p class="msg" id="genMsg"></p>
     <div class="row-actions">
@@ -243,28 +244,43 @@ function editingReview() {
   return !!(node && node.closest && node.closest("#tableWrap"));
 }
 
+function setReviewStatusHint(status) {
+  const box = el("reviewMsg");
+  if (!box) return;
+  if (status === "stored") {
+    box.textContent =
+      "Work is in the datastore. Edit here, Send to datastore again, then regenerate PDFs.";
+    box.className = "msg ok";
+  } else {
+    box.textContent = "";
+    box.className = "msg";
+  }
+}
+
 function applySharedReview(r) {
   if (window._ocrRunning) return;
   if (!r || !r.job_id || !extractHasRows(r.extract)) {
-    if (currentJob && !reviewDirty && !editingReview() && el("reviewSection") && !el("reviewSection").hidden) {
-      const cleared = r && r.closed_status === "cleared";
-      dismissReview(!r || !r.job_id
-        ? (cleared
-          ? "Review cleared. Nothing was saved."
-          : "This sheet was already sent to the datastore.")
-        : "OCR finished with no rows to review.");
+    if (
+      currentJob && !reviewDirty && !editingReview()
+      && el("reviewSection") && !el("reviewSection").hidden
+      && r && r.closed_status === "cleared"
+    ) {
+      dismissReview("Review cleared. Nothing was saved.");
     }
     return;
   }
-  if (r.job_id === currentJob && r.updated_at === reviewStamp) return;
+  const hidden = el("reviewSection") && el("reviewSection").hidden;
+  if (r.job_id === currentJob && r.updated_at === reviewStamp && !hidden) return;
   if (window._ocrRunning && r.job_id !== currentJob) return;
   if (reviewDirty || reviewSaving || editingReview()) return;
-  const reveal = !currentJob || r.job_id !== currentJob || el("reviewSection").hidden;
+  const reveal = !currentJob || r.job_id !== currentJob || hidden;
   currentJob = r.job_id;
   reviewStamp = r.updated_at;
+  if (r.status === "stored") reviewCommitStamp = r.updated_at || reviewCommitStamp;
   if (r.month && /^\d{4}-\d{2}$/.test(r.month)) el("month").value = r.month;
   refreshMonthSuggest();
   showReview(r.extract, reveal);
+  setReviewStatusHint(r.status);
 }
 
 async function syncCurrentJobClosed() {
@@ -274,7 +290,11 @@ async function syncCurrentJobClosed() {
     if (j.status === "stored") {
       reviewCommitStamp = j.updated_at || reviewCommitStamp;
       reviewStamp = j.updated_at || reviewStamp;
-      dismissReview("Sheet sent to the datastore from another device.");
+      const extract = j.extract;
+      if (extract && extractHasRows(extract)) {
+        showReview(extract, false);
+        setReviewStatusHint("stored");
+      }
       if (window.revealBills) window.revealBills();
       else if (typeof loadMonths === "function") loadMonths();
       return;
@@ -689,6 +709,18 @@ function dismissReview(message) {
 
 el("btnClearReview").onclick = async () => {
   if (!currentJob) return;
+  let status = "done";
+  try {
+    const j = await api("/api/jobs/" + currentJob);
+    status = j.status || status;
+  } catch (_) {
+  }
+  if (status === "stored") {
+    if (!window.confirm("Hide this table? Work stays in the datastore until you send again.")) return;
+    hideReview();
+    el("reviewMsg").textContent = "";
+    return;
+  }
   if (!window.confirm("Clear this review? The tables will be dropped and nothing will be saved.")) return;
   const job = currentJob;
   try {
@@ -741,10 +773,10 @@ el("btnCommit").onclick = async () => {
     }
     el("uploadMsg").textContent = `Saved ${r.lines != null ? r.lines : r.written} bill lines for ${r.month}.`;
     el("uploadMsg").className = "msg ok";
-    el("reviewMsg").textContent = "Edits after this need Send to datastore again before generating PDFs.";
     reviewDirty = false;
     reviewCommitStamp = r.updated_at || reviewStamp || reviewCommitStamp;
     if (r.updated_at) reviewStamp = r.updated_at;
+    setReviewStatusHint("stored");
     if (window.revealBills) window.revealBills();
   } catch (e) {
     el("reviewMsg").textContent = e.message;
@@ -1618,6 +1650,7 @@ window.revealBills = () => {
   step.hidden = false;
   el("btnGenerate").disabled = false;
   refreshBills();
+  if (typeof syncWorkflowFromServer === "function") syncWorkflowFromServer();
   step.scrollIntoView({ behavior: "smooth", block: "start" });
 };
 async function loadMonths() {
@@ -1900,10 +1933,16 @@ el("btnCloseViewer").onclick = () => {
 };
 
 el("btnRefresh").onclick = showMonthBills;
+el("btnEditWork").onclick = () => {
+  if (typeof syncWorkflowFromServer === "function") syncWorkflowFromServer();
+  const sec = el("reviewSection");
+  if (sec) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+};
 el("month").addEventListener("change", () => {
   el("genMsg").textContent = "";
   el("mailMsg").textContent = "";
   syncBillStep();
+  if (typeof syncWorkflowFromServer === "function") syncWorkflowFromServer();
 });
 
 const earlierError = window.onJobError;

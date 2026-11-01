@@ -344,7 +344,7 @@ def _find_open_review(conn) -> tuple[dict | None, str | None]:
     """Newest OCR table waiting for review, plus how the last job closed."""
     candidates = conn.execute(
         """
-        SELECT id, month, sheet_kind, updated_at, extract_json
+        SELECT id, month, sheet_kind, updated_at, extract_json, status
         FROM upload_jobs
         WHERE status = 'done' AND extract_json IS NOT NULL
         ORDER BY updated_at DESC NULLS LAST, created_at DESC
@@ -361,9 +361,34 @@ def _find_open_review(conn) -> tuple[dict | None, str | None]:
             LIMIT 1
             """
         ).fetchone()
-        if latest and latest.get("status") in ("cleared", "stored"):
+        if latest and latest.get("status") == "cleared":
             closed = latest["status"]
     return row, closed
+
+
+def _find_editable_review(conn, month: str | None = None) -> tuple[dict | None, str | None]:
+    """Open OCR review, or the last sent sheet for a month so it can be edited again."""
+    row, closed = _find_open_review(conn)
+    if row:
+        out = dict(row)
+        out["status"] = "done"
+        return out, closed
+    month = (month or "").strip() or None
+    if month:
+        stored = conn.execute(
+            """
+            SELECT id, month, sheet_kind, updated_at, extract_json, status
+            FROM upload_jobs
+            WHERE status = 'stored' AND month = %s AND extract_json IS NOT NULL
+            ORDER BY updated_at DESC NULLS LAST, created_at DESC
+            LIMIT 8
+            """,
+            (month,),
+        ).fetchall()
+        hit = next((r for r in stored if _extract_has_rows(r.get("extract_json"))), None)
+        if hit:
+            return dict(hit), None
+    return None, closed
 
 
 def _review_payload(row: dict | None, closed_status: str | None = None) -> dict:
@@ -386,18 +411,22 @@ def _review_payload(row: dict | None, closed_status: str | None = None) -> dict:
         "sheet_kind": row.get("sheet_kind"),
         "updated_at": stamp.isoformat() if hasattr(stamp, "isoformat") else stamp,
         "extract": extract,
+        "status": row.get("status") or "done",
     }
 
 
 @router.get("/review/open", tags=["uploads"])
-def review_open():
-    """The newest OCR result that has not been stored yet.
+def review_open(
+    month: str | None = None,
+):
+    """Editable sheet for Step 2: unsent OCR, or the last sent upload for a month.
 
-    Every browser loads this, so a review started on a phone is the same
-    table on a computer.
+    Pass `month=YYYY-MM` to reopen a stored sheet after bills are generated.
+    Every browser loads this so review stays in sync across devices.
     """
+    month = (month or "").strip() or None
     with db.connect() as conn:
-        row, closed = _find_open_review(conn)
+        row, closed = _find_editable_review(conn, month)
     return _review_payload(row, closed)
 
 
@@ -406,7 +435,7 @@ def ui_sync(month: str | None = None):
     """Workflow snapshot for every browser: open review, months, bill/client revisions."""
     month = (month or "").strip() or None
     with db.connect() as conn:
-        row, closed = _find_open_review(conn)
+        row, closed = _find_editable_review(conn, month)
         review = _review_payload(row, closed)
         workflow_month = review.get("month")
         if not workflow_month:
