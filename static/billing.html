@@ -106,7 +106,7 @@
   </section>
 </main>
 
-  <script src="/static/js/app.js?v=19"></script>
+  <script src="/static/js/app.js?v=20"></script>
 <script>
 var currentJob = null;
 let currentExtract = null;
@@ -1065,6 +1065,26 @@ function refreshMonthSuggest() {
   const box = el("monthSuggest");
   if (!chosen) el("month").value = current;
   const showing = el("month").value;
+  const workMonths = window.monthsWithWork || [];
+  const hasWork = workMonths.includes(showing);
+  if (!hasWork && showing) {
+    box.textContent =
+      `${monthLabel(showing)} has no work in the datastore yet — complete Step 2 and Send to datastore before generating PDFs.`;
+    if (showing !== current) {
+      box.append(" ");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "linkish";
+      btn.textContent = `Switch to ${monthLabel(current)}`;
+      btn.onclick = () => {
+        el("month").value = current;
+        el("month").dispatchEvent(new Event("change"));
+        refreshMonthSuggest();
+      };
+      box.appendChild(btn);
+    }
+    return;
+  }
   if (showing === current) {
     box.textContent = `Suggested month: ${monthLabel(current)}.`;
     return;
@@ -1579,13 +1599,16 @@ function editorLetter(editor) {
   };
 }
 
-let monthsWithWork = [];
+var monthsWithWork = window.monthsWithWork || [];
+window.monthsWithWork = monthsWithWork;
 function syncBillStep() {
   const month = el("month").value;
   const step = el("stepBills");
   if (!step) return;
   const show = monthsWithWork.includes(month);
   step.hidden = !show;
+  if (el("btnGenerate")) el("btnGenerate").disabled = !show;
+  refreshMonthSuggest();
   if (show) refreshBills();
 }
 window.revealBills = () => {
@@ -1600,7 +1623,6 @@ window.revealBills = () => {
 async function loadMonths() {
   const r = await api("/api/months");
   monthsWithWork = r.months || [];
-  el("btnGenerate").disabled = false;
   syncBillStep();
 }
 
@@ -1776,6 +1798,12 @@ function escapeHtml(s) {
 el("btnGenerate").onclick = async () => {
   const month = el("month").value;
   if (!month) return;
+  if (!monthsWithWork.includes(month)) {
+    el("genMsg").textContent =
+      `No work in the datastore for ${monthLabel(month)} yet. Send your reviewed sheet in Step 2 first.`;
+    el("genMsg").className = "msg err";
+    return;
+  }
   if (reviewDirty) {
     el("genMsg").textContent = "You have unsaved review edits. Send to datastore first.";
     el("genMsg").className = "msg err";
@@ -1883,6 +1911,7 @@ window.onJobError = (p) => {
   if (p.kind === "generate") {
     el("genMsg").textContent = p.message || "Bill generation failed";
     el("genMsg").className = "msg err";
+    if (typeof loadMonths === "function") loadMonths();
   }
   if (p.kind === "email") {
     el("mailMsg").textContent = p.message || "Email failed";

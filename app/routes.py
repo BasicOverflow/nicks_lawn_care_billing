@@ -733,7 +733,10 @@ def billing_generate(body: GenerateBills):
         try:
             with db.connect() as conn:
                 if not db.work_for_month(conn, month):
-                    jobs.fail(f"No confirmed work for {month}")
+                    jobs.fail(
+                        f"No work in the datastore for {month}. "
+                        "Finish Step 2 review and click Send to datastore first."
+                    )
                     return
                 jobs.set_progress(percent=40, message="Building PDFs…")
                 bills = billing.generate_month_bills(conn, month)
