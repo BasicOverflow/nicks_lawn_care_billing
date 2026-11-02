@@ -235,9 +235,10 @@ def client_is_set_up(row: dict) -> bool:
 def filing_client(sheet_name: str, roster: list[dict]) -> dict | None:
     """Client the bill should use.
 
-    An exact name that is already set up wins. Otherwise a single close spelling
-    of a set-up client is that same person. Two set-up clients that are equally
-    close are left unresolved.
+    An exact name that is already set up wins. A one-off name (left off the
+    roster) keeps its own bill even when a similarly named roster client exists.
+    Otherwise a single close spelling of a set-up client is that same person.
+    Two set-up clients that are equally close are left unresolved.
     """
     key = _client_key(sheet_name)
     exact = [
@@ -247,6 +248,9 @@ def filing_client(sheet_name: str, roster: list[dict]) -> dict | None:
     priced_exact = [row for row in exact if client_has_prices(row)]
     if priced_exact:
         return priced_exact[0]
+    off_roster_exact = [row for row in exact if row.get("on_roster") is False]
+    if off_roster_exact:
+        return off_roster_exact[0]
     set_up = [row for row in exact if client_is_set_up(row)]
     unset_exact = [row for row in exact if not client_is_set_up(row)]
     scored: list[tuple[float, dict]] = []
@@ -361,7 +365,7 @@ def confirm_extract(
     dollar amount is its own line, using that written price.
     """
     del sheet_kind
-    roster_rows = [row for row in db.list_clients(conn) if row.get("on_roster") is not False]
+    roster_rows = list(db.list_clients(conn))
     conflicts = open_conflicts(extract, roster_rows, resolutions)
     if conflicts:
         return {"conflicts": conflicts, "written": 0, "lines": 0, "month": month}

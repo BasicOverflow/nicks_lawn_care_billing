@@ -53,6 +53,14 @@ def test_near_spelling_suggests_the_roster_client():
     assert open_conflicts(other, roster, [])[0]["suggestion"] is None
 
 
+def test_one_off_exact_name_is_not_filed_under_similar_roster_client():
+    roster = [
+        {"id": 14, "name": "BRADY, Jib & Susan", "email": "jib@example.com", "mow_price": 23, "on_roster": True},
+        {"id": 161, "name": "BRADY, Jim", "on_roster": False},
+    ]
+    assert filing_client("BRADY, Jim", roster)["id"] == 161
+
+
 def test_set_up_client_is_used_for_a_near_spelling():
     roster = [
         {"id": 4, "name": "SMITH, Mary", "address": "123 Main St.", "email": "mary@example.com", "mow_price": 40},

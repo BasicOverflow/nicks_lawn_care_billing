@@ -105,6 +105,35 @@ def test_resend_different_month_leaves_old_month(store):
     assert [row["day_or_note"] for row in store.work_for_month(store, "2026-10")] == ["2"]
 
 
+def test_rebuild_includes_one_off_client_not_a_similar_roster_name(store):
+    store.upsert_client(
+        None, name="BRADY, Jib & Susan", mow_price=23, email="jib@example.com",
+    )
+    sheet = _sheet(["BRADY, Jim", "5 13 20 28"], ["FITZNER, Bill", "15h"])
+    first = confirm_extract(
+        store,
+        sheet,
+        month="2026-10",
+        source_job_id="job-a",
+        resolutions=[
+            {"name": "BRADY, Jim", "add_permanently": False},
+            {"name": "FITZNER, Bill", "add_permanently": False},
+        ],
+    )
+    assert first["conflicts"] == []
+    store.save_upload_job(
+        store, "job-a", "stored", "Stored", extract=sheet, month="2026-10",
+    )
+    rebuilt = rebuild_month_from_review(store, "2026-10")
+    assert rebuilt["conflicts"] == []
+    by_name = {}
+    for row in store.work_for_month(store, "2026-10"):
+        by_name.setdefault(row["client_name"], []).append(row["day_or_note"])
+    assert sorted(by_name["BRADY, Jim"]) == ["13", "20", "28", "5"]
+    assert "BRADY, Jib & Susan" not in by_name
+    assert by_name["FITZNER, Bill"] == ["15h"]
+
+
 def test_one_off_client_is_not_on_roster(store):
     result = confirm_extract(
         store,
