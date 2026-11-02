@@ -92,10 +92,29 @@ def _job_from_chunk(chunk: str) -> tuple[dict | None, str]:
             head = text[: amt_match.start()].strip()
             amount = float(amt_match.group("amt"))
         else:
-            amt_match = re.search(r"\s+(?P<amt>\d+(?:\.\d{1,2})?)\s*$", text)
+            tokens = text.split()
+            trailing: list[str] = []
+            while tokens:
+                last = tokens[-1]
+                if not re.fullmatch(r"(?:[1-9]|[12]\d|3[01])h?", last, re.I):
+                    break
+                head_so_far = " ".join(tokens[:-1])
+                if not re.search(r"[A-Za-z]", head_so_far):
+                    break
+                if not re.search(
+                    r"\b(?:3[2-9]|[4-9]\d|\d{3,})(?:\.\d{1,2})?\b",
+                    head_so_far,
+                ):
+                    break
+                trailing.append(tokens.pop())
+            leftover_after = " ".join(reversed(trailing))
+            amt_match = re.search(
+                r"\s+(?P<amt>\d+(?:\.\d{1,2})?)\s*$",
+                " ".join(tokens),
+            )
             if not amt_match:
                 return None, text
-            head = text[: amt_match.start()].strip()
+            head = " ".join(tokens)[: amt_match.start()].strip()
             amount = float(amt_match.group("amt"))
     if amount <= 0:
         return None, chunk.strip()

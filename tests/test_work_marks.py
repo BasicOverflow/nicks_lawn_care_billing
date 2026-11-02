@@ -107,11 +107,12 @@ def test_seagrass_with_mows_before_or_piped():
     assert ("mow", 16, "", None) in piped
 
 
-def test_days_after_price_without_pipe_is_a_known_misread():
+def test_days_after_a_real_price_stay_mow_days():
     marks = _kinds("17 Seagrass Trimming 225 9 16")
-    custom = [m for m in marks if m[0] == "custom"]
-    assert custom
-    assert custom[0][3] != 225.0 or custom[0][2] != "Seagrass Trimming" or ("mow", 9, "", None) not in marks
+    assert ("custom", 17, "Seagrass Trimming", 225.0) in marks
+    assert ("mow", 9, "", None) in marks
+    assert ("mow", 16, "", None) in marks
+    assert ("mow", 17, "", None) not in marks
 
 
 def test_trailing_dollar_amount_is_the_price():

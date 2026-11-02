@@ -404,25 +404,14 @@ function splitMarks(text) {
 }
 
 function joinMarks(labels) {
-  const parts = [];
-  const days = [];
-  const flush = () => {
-    if (days.length) {
-      parts.push(days.join(" "));
-      days.length = 0;
-    }
-  };
-  labels.forEach(raw => {
-    const value = String(raw || "").trim();
-    if (!value) return;
-    if (isDayBox(value)) days.push(value.replace(/H$/, "h"));
-    else {
-      flush();
-      parts.push(value);
-    }
-  });
-  flush();
-  return parts.join(" | ");
+  return labels
+    .map(raw => {
+      const value = String(raw || "").trim();
+      if (!value) return "";
+      return isDayBox(value) ? value.replace(/H$/, "h") : value;
+    })
+    .filter(Boolean)
+    .join(" | ");
 }
 
 function workColumnIndex(columns) {
