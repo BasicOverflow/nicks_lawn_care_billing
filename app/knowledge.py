@@ -354,6 +354,7 @@ def confirm_extract(
     source_job_id: str | None = None,
     sheet_kind: str = "work",
     resolutions: list[dict] | None = None,
+    wipe_scope: str = "job",
 ) -> dict:
     """Store a reviewed work-completed sheet as one bill line per job.
 
@@ -381,8 +382,8 @@ def confirm_extract(
         if key:
             decisions[key] = item
 
-    if source_job_id:
-        db.delete_sourced_month_work(conn, month)
+    if source_job_id and wipe_scope == "job":
+        db.delete_work_from_job(conn, month, source_job_id)
     rows = extract_rows(extract)
     clients = 0
     lines = 0
@@ -456,18 +457,31 @@ def rebuild_month_from_review(conn, month: str) -> dict | None:
     ]
     if not jobs:
         return None
-    job = jobs[0]
-    extract = job.get("extract_json")
-    if isinstance(extract, str):
-        extract = json.loads(extract)
-    if not isinstance(extract, dict) or not extract_has_rows(extract):
+    db.delete_sourced_month_work(conn, month)
+    jobs.sort(key=lambda job: str(job.get("updated_at") or ""))
+    total = {"written": 0, "lines": 0, "month": month, "conflicts": []}
+    rebuilt_any = False
+    for job in jobs:
+        extract = job.get("extract_json")
+        if isinstance(extract, str):
+            extract = json.loads(extract)
+        if not isinstance(extract, dict) or not extract_has_rows(extract):
+            continue
+        result = confirm_extract(
+            conn,
+            extract,
+            month=month,
+            source_job_id=str(job["id"]),
+            wipe_scope="none",
+        )
+        if result.get("conflicts"):
+            return result
+        rebuilt_any = True
+        total["written"] += int(result.get("written") or 0)
+        total["lines"] += int(result.get("lines") or 0)
+    if not rebuilt_any:
         return None
-    return confirm_extract(
-        conn,
-        extract,
-        month=month,
-        source_job_id=str(job["id"]),
-    )
+    return total
 
 
 def _work_text_legacy(row: dict, name_i: int, addr_i: int) -> str:

@@ -75,7 +75,7 @@ def test_resend_same_job_replaces_other_job_adds(store):
         store, _sheet(["SMITH, Mary", "22"]), month="2026-09", source_job_id="job-b",
     )
     days = sorted(row["day_or_note"] for row in store.work_for_month(store, "2026-09"))
-    assert days == ["22"]
+    assert days == ["22", "9"]
 
 
 def test_manual_work_survives_sheet_resend(store):
@@ -180,6 +180,19 @@ def test_pick_editable_job_prefers_newer_stored_over_old_unsent():
     ]
     picked = pick_editable_job(jobs, "2026-11")
     assert picked["id"] == "sent"
+
+
+def test_second_upload_adds_work_without_wiping_first_batch(store):
+    store.upsert_client(None, name="SMITH, Mary", mow_price=40, email="m@example.com")
+    store.upsert_client(None, name="JONES, Ann", mow_price=30, email="ann@example.com")
+    confirm_extract(
+        store, _sheet(["SMITH, Mary", "8"]), month="2026-10", source_job_id="job-a",
+    )
+    confirm_extract(
+        store, _sheet(["JONES, Ann", "16"]), month="2026-10", source_job_id="job-b",
+    )
+    by_client = {row["client_name"] for row in store.work_for_month(store, "2026-10")}
+    assert by_client == {"SMITH, Mary", "JONES, Ann"}
 
 
 def test_rebuild_from_saved_review_replaces_stale_job_lines(store):
