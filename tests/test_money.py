@@ -21,6 +21,7 @@ from app.billing import (
     stored_letter,
     tax_client_figures,
     tax_workbook_bytes,
+    work_month_ym,
 )
 
 
@@ -190,6 +191,12 @@ def test_letter_wording_restores_when_cleared():
     assert letter_or_default("Hello Mary,", default_greeting("SMITH, Mary")) == "Hello Mary,"
     assert stored_letter("Dear Mary,", default_greeting("SMITH, Mary")) is None
     assert stored_letter("Hello Mary,", default_greeting("SMITH, Mary")) == "Hello Mary,"
+
+
+def test_work_month_is_previous_calendar_month():
+    assert work_month_ym(date(2026, 11, 1)) == "2026-10"
+    assert work_month_ym(date(2026, 1, 15)) == "2025-12"
+    assert work_month_ym(date(2026, 10, 31)) == "2026-09"
 
 
 def test_letter_date_is_the_first_of_the_next_month():

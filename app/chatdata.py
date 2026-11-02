@@ -11,6 +11,7 @@ from datetime import date
 from typing import Any
 
 from . import db, storage
+from .billing import work_month_ym
 
 CHAT_REPLY_SCHEMA = {
     "type": "object",
@@ -244,16 +245,18 @@ def _month_from_chat_text(text: str, *, today: date) -> str | None:
         return None
     names = "|".join(sorted(_MONTH_NAMES, key=len, reverse=True))
     named = re.search(rf"\b({names})\b(?:\s+(20\d{{2}}))?", text)
-    if not named:
-        return None
-    month_n = _MONTH_NAMES[named.group(1)]
-    if named.group(2):
-        year = int(named.group(2))
-    elif month_n <= today.month:
-        year = today.year
-    else:
-        year = today.year - 1
-    return f"{year}-{month_n:02d}"
+    if named:
+        month_n = _MONTH_NAMES[named.group(1)]
+        if named.group(2):
+            year = int(named.group(2))
+        elif month_n <= today.month:
+            year = today.year
+        else:
+            year = today.year - 1
+        return f"{year}-{month_n:02d}"
+    if re.search(r"\b(?:this|current)\s+month\b", text):
+        return work_month_ym(today)
+    return None
 
 
 def _clear_month(conn, month: str) -> dict:
@@ -268,6 +271,8 @@ def _status_month(question: str, *, today: date | None = None) -> str | None:
     """YYYY-MM when the user asked whether a month has stored data."""
     text = (question or "").strip().lower()
     if re.search(r"\b(delete|remove|wipe|clear|erase|drop)\b", text):
+        return None
+    if re.search(r"\b(show|list|display)\b", text):
         return None
     if not re.search(
         r"\b(have|has|any|how many|count|what's in|whats in|what is in|"
@@ -324,6 +329,8 @@ def _wipe_month(question: str, *, today: date | None = None) -> str | None:
         return month
     names = "|".join(sorted(_MONTH_NAMES, key=len, reverse=True))
     if re.search(rf"\b({names})\b", text):
+        return month
+    if re.search(r"\b(?:this|current)\s+month\b", text):
         return month
     if re.search(
         r"\b(work[-\s]?completed|work|jobs?|visits?|mows?|mowing|bills?|invoices?|"
@@ -393,7 +400,10 @@ def answer(conn, question: str, history: list[dict[str, str]] | None = None) -> 
         "Use this for 'delete all September work' or 'delete November'. Do not emit one delete_work per row.\n"
         "Use ids from the snapshot. Never invent clients. Do not delete clients.\n"
         "If the user is only asking a question, mutations=[].\n"
-        "If they ask to change data, include mutations and summarize them in reply.\n\n"
+        "If they ask to change data, include mutations and summarize them in reply.\n"
+        f"Today is {date.today().isoformat()}. The current billing cycle is "
+        f"{work_month_ym()} (the work month; invoices are dated the 1st of the next "
+        "month). 'this month' means that work month, not the calendar month.\n\n"
         f"DATASTORE JSON:\n{snap}\n\n"
         f"Recent chat:\n{hist_txt}\n"
         f"user: {question.strip()}\n"

@@ -52,7 +52,7 @@ py -3 run.py                    # http://127.0.0.1:8787
 ```
 
 1. Open **Data** → **Load model** (waits for Serve).
-2. Upload a work-completed sheet (month defaults to the current month) → review → **Send to datastore**.
+2. Upload a work-completed sheet (month defaults to last month, the work being billed) → review → **Send to datastore**.
 3. **Billing** → Generate PDFs → Download zip. Email all when SMTP is configured.
 
 ## Docker Compose

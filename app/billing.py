@@ -76,6 +76,18 @@ def _first_name(name: str) -> str:
     return word
 
 
+def work_month_ym(today: date | None = None) -> str:
+    """YYYY-MM of the work being billed today.
+
+    Invoices go out on the first of the following month, so on November 1 the
+    billing month is October.
+    """
+    today = today or date.today()
+    if today.month == 1:
+        return f"{today.year - 1}-12"
+    return f"{today.year}-{today.month - 1:02d}"
+
+
 def _invoice_when(month: str) -> tuple[str, str, int]:
     """Letter date, work-month name, and work-month number.
 

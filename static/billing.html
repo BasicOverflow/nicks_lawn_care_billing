@@ -31,7 +31,7 @@
   <section class="card" id="stepUpload">
     <p class="step-kicker">Step 1</p>
     <h2>Work completed</h2>
-    <p class="hint">Pick the month, add photos of the work-completed sheet, then Upload &amp; OCR.</p>
+    <p class="hint">Pick the month the work was done, add photos of the work-completed sheet, then Upload &amp; OCR. Invoices are dated the 1st of the next month, so October work billed in November is still October.</p>
     <label for="month">Billing month</label>
     <input id="month" type="month" required/>
     <p class="hint" id="monthSuggest"></p>
@@ -1074,7 +1074,8 @@ function fillManualClients(clients) {
 
 function currentBillingMonth() {
   const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const work = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  return `${work.getFullYear()}-${String(work.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function monthLabel(ym) {

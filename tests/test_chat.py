@@ -41,6 +41,15 @@ def test_year_rollover_uses_previous_year():
     assert _month_from_chat_text("january", today=today) == "2026-01"
 
 
+def test_this_month_is_the_work_month(today_nov):
+    assert _month_from_chat_text("this month", today=today_nov) == "2026-10"
+    assert _month_from_chat_text("current month", today=today_nov) == "2026-10"
+    assert _month_from_chat_text("november", today=today_nov) == "2026-11"
+    assert _status_month("do i have data this month", today=today_nov) == "2026-10"
+    assert _status_month("show work items for this month", today=today_nov) is None
+    assert _wipe_month("delete this month", today=today_nov) == "2026-10"
+
+
 def test_wipe_deletes_work_and_bills_keeps_clients_and_jobs(store, blobs, monkeypatch):
     monkeypatch.setattr("app.chatdata.date", type("D", (), {
         "today": staticmethod(lambda: date(2026, 11, 1)),
