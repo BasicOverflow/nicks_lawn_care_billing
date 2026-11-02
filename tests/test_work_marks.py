@@ -115,13 +115,19 @@ def test_days_after_price_without_pipe_is_a_known_misread():
 
 
 def test_trailing_dollar_amount_is_the_price():
-    marks = _kinds("22 Hedged Trimming 65 $26")
-    custom = [m for m in marks if m[0] == "custom"]
-    assert custom
-    assert custom[0][3] == 26.0
     intended = _kinds("22 Hedged Trimming 65")
     assert ("custom", 22, "Hedged Trimming", 65.0) in intended
     assert ("mow", 22, "", None) not in intended
+    marks = _kinds("22 Hedged Trimming 65 $26")
+    assert ("custom", 22, "Hedged Trimming", 65.0) in marks
+    assert ("mow", 26, "", None) not in marks
+    dump = _kinds("2 Branches Dump Run 15 | 2 9 19 26")
+    assert ("custom", 2, "Branches Dump Run", 15.0) in dump
+    assert ("mow", 9, "", None) in dump
+    assert ("mow", 19, "", None) in dump
+    assert ("mow", 26, "", None) in dump
+    assert ("mow", 2, "", None) not in dump
+    assert ("mow", 15, "", None) not in dump
 
 
 def test_dump_run_dollar_amount_is_not_a_mow_day():

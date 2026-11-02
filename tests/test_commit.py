@@ -1,6 +1,6 @@
 """confirm_extract replace-on-resend, conflicts, and store_work_text."""
 
-from app.knowledge import confirm_extract, pick_editable_job, store_work_text
+from app.knowledge import confirm_extract, pick_editable_job, rebuild_month_from_review, store_work_text
 
 
 def _sheet(*rows, columns=None):
@@ -75,7 +75,7 @@ def test_resend_same_job_replaces_other_job_adds(store):
         store, _sheet(["SMITH, Mary", "22"]), month="2026-09", source_job_id="job-b",
     )
     days = sorted(row["day_or_note"] for row in store.work_for_month(store, "2026-09"))
-    assert days == ["22", "9"]
+    assert days == ["22"]
 
 
 def test_manual_work_survives_sheet_resend(store):
@@ -151,3 +151,28 @@ def test_pick_editable_job_prefers_newer_stored_over_old_unsent():
     ]
     picked = pick_editable_job(jobs, "2026-11")
     assert picked["id"] == "sent"
+
+
+def test_rebuild_from_saved_review_replaces_stale_job_lines(store):
+    store.upsert_client(None, name="ARBORIO, Peter", mow_price=45, email="a@example.com")
+    confirm_extract(
+        store,
+        _sheet(["ARBORIO, Peter", "2 9 15 19 26"]),
+        month="2026-11",
+        source_job_id="old-job",
+    )
+    store.save_upload_job(
+        store, "new-job", "stored", "Stored",
+        extract=_sheet(["ARBORIO, Peter", "2 Branches Dump Run $15 | 9 19 26"]),
+        month="2026-11",
+    )
+    result = rebuild_month_from_review(store, "2026-11")
+    assert result["conflicts"] == []
+    rows = store.work_for_month(store, "2026-11")
+    kinds = {(row["description"], float(row["amount"] or 0), row["day_or_note"]) for row in rows}
+    assert ("Branches Dump Run", 15.0, "2") in kinds
+    assert ("Mowing 9", 45.0, "9") in kinds
+    assert ("Mowing 19", 45.0, "19") in kinds
+    assert ("Mowing 26", 45.0, "26") in kinds
+    assert ("Mowing 15", 45.0, "15") not in kinds
+    assert ("Mowing 2", 45.0, "2") not in kinds

@@ -779,6 +779,20 @@ def delete_work_from_job(conn, month: str, source_job_id: str) -> int:
     return len(rows)
 
 
+def delete_sourced_month_work(conn, month: str) -> int:
+    """Drop sheet-sent work for a month. Hand-typed lines (no job id) stay."""
+    month = (month or "").strip()
+    rows = conn.execute(
+        """
+        DELETE FROM work_items
+        WHERE month = %s AND source_job_id IS NOT NULL
+        RETURNING id
+        """,
+        (month,),
+    ).fetchall()
+    return len(rows)
+
+
 def delete_client_month(conn, month: str, client_id: int) -> list[str]:
     """Remove one client's work and bill for a month. Returns PDF keys."""
     bills = conn.execute(

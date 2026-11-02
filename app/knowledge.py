@@ -378,7 +378,7 @@ def confirm_extract(
             decisions[key] = item
 
     if source_job_id:
-        db.delete_work_from_job(conn, month, source_job_id)
+        db.delete_sourced_month_work(conn, month)
     rows = extract_rows(extract)
     clients = 0
     lines = 0
@@ -435,6 +435,35 @@ def confirm_extract(
         )
         clients += 1
     return {"written": clients, "lines": lines, "month": month, "conflicts": []}
+
+
+def rebuild_month_from_review(conn, month: str) -> dict | None:
+    """Rebuild sourced work from the saved Step 2 table. Does not clear the review.
+
+    Newest stored extract for the month is the source of truth, including draft
+    edits saved after the last Send. Hand-typed work (no upload id) stays.
+    """
+    month = (month or "").strip()
+    if not month:
+        return None
+    jobs = [
+        job for job in db.list_editable_jobs(conn)
+        if str(job.get("month") or "") == month and str(job.get("status") or "") == "stored"
+    ]
+    if not jobs:
+        return None
+    job = jobs[0]
+    extract = job.get("extract_json")
+    if isinstance(extract, str):
+        extract = json.loads(extract)
+    if not isinstance(extract, dict) or not extract_has_rows(extract):
+        return None
+    return confirm_extract(
+        conn,
+        extract,
+        month=month,
+        source_job_id=str(job["id"]),
+    )
 
 
 def _work_text_legacy(row: dict, name_i: int, addr_i: int) -> str:

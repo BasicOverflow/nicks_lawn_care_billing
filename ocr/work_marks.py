@@ -76,18 +76,27 @@ def _job_from_chunk(chunk: str) -> tuple[dict | None, str]:
     if not text or not re.search(r"[A-Za-z]", text):
         return None, chunk.strip()
     leftover_after = ""
-    dollars = list(re.finditer(r"\$\s*(?P<amt>\d+(?:\.\d{1,2})?)", text))
-    if dollars:
-        amt_match = dollars[-1]
-        leftover_after = text[amt_match.end():].strip()
-        head = text[: amt_match.start()].strip()
-        amount = float(amt_match.group("amt"))
+    # `22 Hedged Trimming 65 $26` — written price is 65; the `$26` is OCR junk.
+    dual = re.search(
+        r"^(?P<head>.*[A-Za-z].*)\s+(?P<bare>\d+(?:\.\d{1,2})?)\s+\$\s*(?P<junk>\d+(?:\.\d{1,2})?)\s*$",
+        text,
+    )
+    if dual:
+        amount = float(dual.group("bare"))
+        head = dual.group("head").strip()
     else:
-        amt_match = re.search(r"\s+(?P<amt>\d+(?:\.\d{1,2})?)\s*$", text)
-        if not amt_match:
-            return None, text
-        head = text[: amt_match.start()].strip()
-        amount = float(amt_match.group("amt"))
+        dollars = list(re.finditer(r"\$\s*(?P<amt>\d+(?:\.\d{1,2})?)", text))
+        if dollars:
+            amt_match = dollars[-1]
+            leftover_after = text[amt_match.end():].strip()
+            head = text[: amt_match.start()].strip()
+            amount = float(amt_match.group("amt"))
+        else:
+            amt_match = re.search(r"\s+(?P<amt>\d+(?:\.\d{1,2})?)\s*$", text)
+            if not amt_match:
+                return None, text
+            head = text[: amt_match.start()].strip()
+            amount = float(amt_match.group("amt"))
     if amount <= 0:
         return None, chunk.strip()
     split = re.match(

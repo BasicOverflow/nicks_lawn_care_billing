@@ -641,7 +641,15 @@ def generate_month_bills(conn, month: str) -> list[dict]:
     """Create PDFs for each client with work in month; upload to S3; save bill rows."""
     from . import db
 
+    from .knowledge import rebuild_month_from_review
+
     _retarget_month_clients(conn, month)
+    rebuilt = rebuild_month_from_review(conn, month)
+    if rebuilt and rebuilt.get("conflicts"):
+        raise RuntimeError(
+            "The saved Step 2 table has names that are not on the client list. "
+            "Open review, finish those names, and Send to datastore."
+        )
     rows = db.work_for_month(conn, month)
     by_client: dict[int, list] = defaultdict(list)
     meta: dict[int, dict] = {}

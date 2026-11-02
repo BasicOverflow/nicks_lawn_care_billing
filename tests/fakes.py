@@ -521,6 +521,15 @@ class FakeStore:
             self.work_items.pop(wid, None)
         return len(drop)
 
+    def delete_sourced_month_work(self, conn, month: str) -> int:
+        drop = [
+            wid for wid, row in self.work_items.items()
+            if row["month"] == month and row.get("source_job_id")
+        ]
+        for wid in drop:
+            self.work_items.pop(wid, None)
+        return len(drop)
+
     def delete_client_month(self, conn, month: str, client_id: int) -> list[str]:
         keys = []
         drop_bills = [
@@ -676,6 +685,7 @@ DB_FUNCS = (
     "patch_work_item",
     "delete_work_item",
     "delete_work_from_job",
+    "delete_sourced_month_work",
     "delete_client_month",
     "delete_client",
     "set_client_email",

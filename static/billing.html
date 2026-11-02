@@ -1841,19 +1841,6 @@ el("btnGenerate").onclick = async () => {
     el("genMsg").className = "msg err";
     return;
   }
-  if (reviewDirty) {
-    el("genMsg").textContent = "You have unsaved review edits. Send to datastore first.";
-    el("genMsg").className = "msg err";
-    return;
-  }
-  if (
-    currentJob && reviewCommitStamp && reviewStamp
-    && reviewStamp !== reviewCommitStamp
-  ) {
-    el("genMsg").textContent = "The review table changed after the last send. Send to datastore again.";
-    el("genMsg").className = "msg err";
-    return;
-  }
   if (currentJob && el("reviewSection") && !el("reviewSection").hidden && extractHasRows(collectExtract())) {
     try {
       const open = await api("/api/jobs/" + currentJob);
@@ -1863,6 +1850,12 @@ el("btnGenerate").onclick = async () => {
         return;
       }
     } catch (_) {
+    }
+    if (reviewDirty) {
+      try {
+        await saveReviewDraft();
+      } catch (_) {
+      }
     }
   }
   try {
