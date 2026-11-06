@@ -290,21 +290,9 @@ def test_zip_download_headers(client, store, blobs):
     assert r.status_code in {200, 400, 404, 500}
 
 
-def test_mail_zip_url_returns_one_pdf(client, store, blobs):
-    mail = store.upsert_client(None, name="MAIL, Pat", prefer_mail=True, mow_price=40)
-    other = store.upsert_client(None, name="SMS, Ann", phone="8605550100", mow_price=40)
-    for cid in (mail, other):
-        store.add_work_item(
-            None, client_id=cid, month="2026-09", description="Mowing 8", amount=40, day_or_note="8",
-        )
-    from app.billing import generate_month_bills
-    generate_month_bills(store, "2026-09")
+def test_mail_zip_url_is_gone(client):
     r = client.get("/api/billing/2026-09/download.zip", params={"mode": "mailing_only"})
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("application/pdf")
-    assert r.content[:5] == b"%PDF-"
-    assert 'filename="bills_2026-09_mail.pdf"' in r.headers.get("content-disposition", "")
-    assert b"PK" != r.content[:2]
+    assert r.status_code == 400
 
 
 def test_progress_lists_jobs(client):

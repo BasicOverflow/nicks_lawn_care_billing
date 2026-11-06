@@ -837,28 +837,14 @@ def billing_zip(
     month: str = ApiPath(..., description="Billing month, YYYY-MM."),
     mode: str = Query(
         "all",
-        description="all, mailing_only (paper), sms_only, or with_email.",
+        description="all, sms_only, or with_email. Paper mail is download.pdf.",
     ),
 ):
-    """Zip of separate PDFs, except paper mail, which is one combined PDF.
-
-    `mode` must be `all`, `mailing_only`, `sms_only`, or `with_email`.
-    `mailing_only` is one PDF so an older button that still calls this zip URL
-    does not hand Nick a folder of files.
-    """
-    if mode not in ("all", "mailing_only", "sms_only", "with_email"):
-        raise HTTPException(400, "mode must be all|mailing_only|sms_only|with_email")
+    """Zip of separate SMS or email PDFs. Paper bills use download.pdf."""
     if mode == "mailing_only":
-        try:
-            with db.connect() as conn:
-                data = billing.merge_bills_pdf(conn, month, mode=mode)
-        except ValueError as exc:
-            raise HTTPException(404, str(exc)) from exc
-        return Response(
-            data,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="bills_{month}_mail.pdf"'},
-        )
+        raise HTTPException(400, "Paper mail bills are one PDF at download.pdf?mode=mailing_only")
+    if mode not in ("all", "sms_only", "with_email"):
+        raise HTTPException(400, "mode must be all|sms_only|with_email")
     try:
         with db.connect() as conn:
             data = billing.zip_bills(conn, month, mode=mode)
