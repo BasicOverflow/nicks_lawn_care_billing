@@ -91,7 +91,10 @@ def data_page():
 @app.get("/billing", include_in_schema=False)
 def billing_page():
     """Upload, review, then generate bills, one step under the next."""
-    return FileResponse(STATIC / "billing.html")
+    return FileResponse(
+        STATIC / "billing.html",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/howto", include_in_schema=False)

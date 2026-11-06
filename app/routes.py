@@ -840,12 +840,25 @@ def billing_zip(
         description="all, mailing_only (paper), sms_only, or with_email.",
     ),
 ):
-    """Zip of PDF bills for the month, filtered by delivery.
+    """Zip of separate PDFs, except paper mail, which is one combined PDF.
 
     `mode` must be `all`, `mailing_only`, `sms_only`, or `with_email`.
+    `mailing_only` is one PDF so an older button that still calls this zip URL
+    does not hand Nick a folder of files.
     """
     if mode not in ("all", "mailing_only", "sms_only", "with_email"):
         raise HTTPException(400, "mode must be all|mailing_only|sms_only|with_email")
+    if mode == "mailing_only":
+        try:
+            with db.connect() as conn:
+                data = billing.merge_bills_pdf(conn, month, mode=mode)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return Response(
+            data,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="bills_{month}_mail.pdf"'},
+        )
     try:
         with db.connect() as conn:
             data = billing.zip_bills(conn, month, mode=mode)
@@ -853,7 +866,6 @@ def billing_zip(
         raise HTTPException(404, str(exc)) from exc
     suffix = {
         "all": "all",
-        "mailing_only": "mail",
         "sms_only": "sms",
         "with_email": "with_email",
     }[mode]
